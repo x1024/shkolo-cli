@@ -1,5 +1,6 @@
 mod api;
 mod cache;
+mod i18n;
 mod models;
 mod tui;
 
@@ -130,6 +131,15 @@ enum JsonCommands {
 
     /// Get summary for all students
     Summary,
+
+    /// Get absences (testing endpoint)
+    Absences {
+        /// Student name or index (optional, defaults to first)
+        student: Option<String>,
+    },
+
+    /// Try messages endpoints (discovery)
+    Messages,
 }
 
 #[tokio::main]
@@ -270,13 +280,48 @@ async fn run_json_command(
 
             output_json(&api::ApiResponse::new(summaries, students_cached && !no_cache, None), format)?;
         }
+        JsonCommands::Absences { student } => {
+            let (students, _, _) = get_students(&client, cache, force_refresh || no_cache).await?;
+            let selected = select_students(&students, student.as_deref());
+
+            if let Some(s) = selected.first() {
+                let response = client.get_absences(s.id).await?;
+                output_json(&api::ApiResponse::new(response, false, None), format)?;
+            } else {
+                output_json(&api::ApiResponse::new(serde_json::json!({"error": "No student found"}), false, None), format)?;
+            }
+        }
+        JsonCommands::Messages => {
+            // Use the correct messenger API
+            let mut results = serde_json::json!({});
+
+            // Get folders
+            match client.get_messenger_folders().await {
+                Ok(data) => results["folders"] = serde_json::to_value(data)?,
+                Err(e) => results["folders_error"] = serde_json::json!(e.to_string()),
+            }
+
+            // Get threads (inbox)
+            match client.get_messenger_threads(None).await {
+                Ok(data) => results["threads"] = serde_json::to_value(data)?,
+                Err(e) => results["threads_error"] = serde_json::json!(e.to_string()),
+            }
+
+            // Check if can send
+            match client.can_send_messages().await {
+                Ok(data) => results["can_send"] = serde_json::json!(data),
+                Err(e) => results["can_send_error"] = serde_json::json!(e.to_string()),
+            }
+
+            output_json(&api::ApiResponse::new(results, false, None), format)?;
+        }
     }
 
     Ok(())
 }
 
 async fn run_tui(cache: &CacheStore) -> Result<()> {
-    let client = get_authenticated_client(cache)?;
+    let mut client = get_authenticated_client(cache)?;
 
     // Setup terminal
     enable_raw_mode()?;
@@ -287,6 +332,24 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
     // Create app
     let mut app = App::new();
+
+    // Load user name from token cache
+    if let Ok(token_data) = cache.load_token() {
+        if let Some(data) = token_data.user_data {
+            // Try "names" field first (from import)
+            if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
+                app.user_name = Some(names.to_string());
+            }
+            // Try "users" array (from login)
+            else if let Some(users) = data.get("users").and_then(|v: &serde_json::Value| v.as_array()) {
+                if let Some(first) = users.first() {
+                    if let Some(names) = first.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
+                        app.user_name = Some(names.to_string());
+                    }
+                }
+            }
+        }
+    }
 
     // Load cached data first
     app.load_from_cache(cache).await;
@@ -332,6 +395,96 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
                         if let Err(e) = app.refresh_data(&client, cache, true).await {
                             app.set_status(format!("Error: {}", e));
+                        }
+                    }
+                    Action::Logout => {
+                        // Clear token and exit
+                        if let Err(e) = cache.clear_token() {
+                            app.set_status(format!("Logout error: {}", e));
+                        } else {
+                            app.set_status("Logged out. Restart to log in again.");
+                            app.user_name = None;
+                            // Exit after logout
+                            app.quit();
+                        }
+                    }
+                    Action::LoginPassword => {
+                        // Temporarily exit raw mode for interactive login
+                        disable_raw_mode()?;
+                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+                        println!("Login with username/password:");
+                        if let Err(e) = login(cache, None, None).await {
+                            eprintln!("Login failed: {}", e);
+                            eprintln!("Press Enter to continue...");
+                            let mut input = String::new();
+                            let _ = io::stdin().read_line(&mut input);
+                        } else {
+                            println!("Press Enter to continue...");
+                            let mut input = String::new();
+                            let _ = io::stdin().read_line(&mut input);
+                        }
+
+                        // Re-enter TUI mode
+                        enable_raw_mode()?;
+                        execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+
+                        // Reload token and refresh data
+                        if let Ok(token_data) = cache.load_token() {
+                            client = ShkoloClient::with_token(token_data.token, token_data.school_year);
+                            if let Some(data) = token_data.user_data {
+                                if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
+                                    app.user_name = Some(names.to_string());
+                                } else if let Some(users) = data.get("users").and_then(|v: &serde_json::Value| v.as_array()) {
+                                    if let Some(first) = users.first() {
+                                        if let Some(names) = first.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
+                                            app.user_name = Some(names.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            app.loading = true;
+                            app.set_status("Loading data...");
+                            terminal.draw(|f| draw(f, &app))?;
+                            if let Err(e) = app.refresh_data(&client, cache, true).await {
+                                app.set_status(format!("Error: {}", e));
+                            }
+                        }
+                    }
+                    Action::LoginGoogle => {
+                        // Google login requires browser - show message
+                        app.set_status("Google login not yet implemented in TUI");
+                    }
+                    Action::ImportToken => {
+                        // Temporarily exit raw mode for import output
+                        disable_raw_mode()?;
+                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+                        if let Err(e) = import_token(cache) {
+                            eprintln!("Import failed: {}", e);
+                        }
+                        println!("\nPress Enter to continue...");
+                        let mut input = String::new();
+                        let _ = io::stdin().read_line(&mut input);
+
+                        // Re-enter TUI mode
+                        enable_raw_mode()?;
+                        execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+
+                        // Reload token and refresh data
+                        if let Ok(token_data) = cache.load_token() {
+                            client = ShkoloClient::with_token(token_data.token, token_data.school_year);
+                            if let Some(data) = token_data.user_data {
+                                if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
+                                    app.user_name = Some(names.to_string());
+                                }
+                            }
+                            app.loading = true;
+                            app.set_status("Loading data...");
+                            terminal.draw(|f| draw(f, &app))?;
+                            if let Err(e) = app.refresh_data(&client, cache, true).await {
+                                app.set_status(format!("Error: {}", e));
+                            }
                         }
                     }
                     Action::None => {}
