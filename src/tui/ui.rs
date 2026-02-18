@@ -188,6 +188,8 @@ fn draw_overview_schedule(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_overview_homework(frame: &mut Frame, app: &App, area: Rect) {
+    let text_width = area.width.saturating_sub(4) as usize;
+
     let content = if let Some(data) = app.current_student() {
         let recent = data.recent_homework();
         if recent.is_empty() {
@@ -195,19 +197,25 @@ fn draw_overview_homework(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             recent.iter()
                 .take(5)
-                .map(|hw| {
+                .flat_map(|hw| {
                     let due_str = hw.due_date
                         .as_ref()
                         .map(|d| format!(" -> {}", d))
                         .unwrap_or_default();
 
-                    let line = format!(
-                        "  [{}] {}{}: {}",
-                        hw.date, hw.subject, due_str,
-                        truncate(&hw.text, 40)
-                    );
+                    let mut lines = vec![
+                        Line::from(Span::styled(
+                            format!("  [{}] {}{}", hw.date, hw.subject, due_str),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        )),
+                    ];
 
-                    ListItem::new(line)
+                    // Wrap the homework text
+                    for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
+                        lines.push(Line::from(wrapped_line));
+                    }
+
+                    vec![ListItem::new(lines)]
                 })
                 .collect()
         }
@@ -272,6 +280,8 @@ fn draw_overview_grades(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
+    let text_width = area.width.saturating_sub(4) as usize; // Account for borders and padding
+
     let content = if let Some(data) = app.current_student() {
         if data.homework.is_empty() {
             vec![ListItem::new("  No homework found")]
@@ -293,59 +303,65 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
             });
 
             let mut items = Vec::new();
-            let max_items = area.height.saturating_sub(2) as usize / 3;
-            let mut count = 0;
 
             // Future homework first (upcoming, due today or later)
             for hw in future.iter().skip(app.list_offset) {
-                if count >= max_items { break; }
                 let due_str = hw.due_date
                     .as_ref()
                     .map(|d| format!(" -> Due: {}", d))
                     .unwrap_or_default();
 
-                let lines = vec![
+                let mut lines = vec![
                     Line::from(Span::styled(
                         format!("  [{}] {}{}", hw.date, hw.subject, due_str),
                         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                     )),
-                    Line::from(format!("    {}", hw.text)),
-                    Line::from(""),
                 ];
+
+                // Wrap the homework text
+                for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
+                    lines.push(Line::from(Span::styled(
+                        wrapped_line,
+                        Style::default().fg(Color::Green),
+                    )));
+                }
+                lines.push(Line::from(""));
+
                 items.push(ListItem::new(lines));
-                count += 1;
             }
 
             // Add divider if we have both future and past items
-            if !future.is_empty() && !past.is_empty() && count < max_items {
+            if !future.is_empty() && !past.is_empty() {
                 items.push(ListItem::new(Line::from(Span::styled(
                     "  ─────────────── Past due ───────────────",
                     Style::default().fg(Color::DarkGray),
                 ))));
-                count += 1;
             }
 
             // Past homework (overdue)
             for hw in past.iter() {
-                if count >= max_items { break; }
                 let due_str = hw.due_date
                     .as_ref()
                     .map(|d| format!(" -> Due: {}", d))
                     .unwrap_or_default();
 
-                let lines = vec![
+                let mut lines = vec![
                     Line::from(Span::styled(
                         format!("  [{}] {}{}", hw.date, hw.subject, due_str),
                         Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
                     )),
-                    Line::from(Span::styled(
-                        format!("    {}", hw.text),
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                    Line::from(""),
                 ];
+
+                // Wrap the homework text
+                for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
+                    lines.push(Line::from(Span::styled(
+                        wrapped_line,
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+                lines.push(Line::from(""));
+
                 items.push(ListItem::new(lines));
-                count += 1;
             }
 
             items
@@ -559,13 +575,14 @@ fn draw_schedule(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
+    let text_width = area.width.saturating_sub(4) as usize;
+
     let content = if app.notifications.is_empty() {
         vec![ListItem::new("  No notifications")]
     } else {
         app.notifications
             .iter()
             .skip(app.list_offset)
-            .take(area.height.saturating_sub(2) as usize / 3)
             .map(|notif| {
                 let read_style = if notif.is_read {
                     Style::default().fg(Color::DarkGray)
@@ -575,15 +592,19 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
 
                 let read_marker = if notif.is_read { "" } else { "[NEW] " };
 
-                let mut lines = vec![
-                    Line::from(Span::styled(
-                        format!("  {}{}", read_marker, notif.title),
-                        read_style,
-                    )),
-                ];
+                let mut lines = Vec::new();
 
+                // Wrap title
+                let title_text = format!("{}{}", read_marker, notif.title);
+                for wrapped_line in wrap_text(&title_text, text_width, "  ") {
+                    lines.push(Line::from(Span::styled(wrapped_line, read_style)));
+                }
+
+                // Wrap body if present
                 if let Some(ref body) = notif.body {
-                    lines.push(Line::from(format!("    {}", truncate(body, 60))));
+                    for wrapped_line in wrap_text(body, text_width, "    ") {
+                        lines.push(Line::from(wrapped_line));
+                    }
                 }
 
                 lines.push(Line::from(Span::styled(
@@ -702,4 +723,51 @@ fn truncate(s: &str, max_len: usize) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Wrap text to fit within a given width, returning multiple lines
+fn wrap_text(s: &str, width: usize, indent: &str) -> Vec<String> {
+    if width == 0 || s.is_empty() {
+        return vec![format!("{}{}", indent, s)];
+    }
+
+    let effective_width = width.saturating_sub(indent.chars().count());
+    if effective_width == 0 {
+        return vec![format!("{}{}", indent, s)];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut current_len = 0;
+
+    for word in s.split_whitespace() {
+        let word_len = word.chars().count();
+
+        if current_len == 0 {
+            // First word on line
+            current_line = word.to_string();
+            current_len = word_len;
+        } else if current_len + 1 + word_len <= effective_width {
+            // Word fits on current line
+            current_line.push(' ');
+            current_line.push_str(word);
+            current_len += 1 + word_len;
+        } else {
+            // Word doesn't fit, start new line
+            lines.push(format!("{}{}", indent, current_line));
+            current_line = word.to_string();
+            current_len = word_len;
+        }
+    }
+
+    // Don't forget the last line
+    if !current_line.is_empty() {
+        lines.push(format!("{}{}", indent, current_line));
+    }
+
+    if lines.is_empty() {
+        lines.push(indent.to_string());
+    }
+
+    lines
 }
