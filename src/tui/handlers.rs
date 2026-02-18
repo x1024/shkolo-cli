@@ -1,11 +1,16 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::app::{App, Focus};
+use crate::i18n::Lang;
+use super::app::{App, Focus, Tab};
 
 pub enum Action {
     None,
     Refresh,
     RefreshAll,
+    Logout,
+    LoginPassword,
+    LoginGoogle,
+    ImportToken,
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
@@ -13,6 +18,33 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.quit();
         return Action::None;
+    }
+
+    // Settings tab has special key bindings
+    if app.current_tab == Tab::Settings {
+        match key.code {
+            KeyCode::Char('g') | KeyCode::Char('G') => {
+                // Toggle language
+                app.lang = match app.lang {
+                    Lang::Bg => Lang::En,
+                    Lang::En => Lang::Bg,
+                };
+                return Action::None;
+            }
+            KeyCode::Char('l') | KeyCode::Char('L') => {
+                return Action::Logout;
+            }
+            KeyCode::Char('1') => {
+                return Action::LoginPassword;
+            }
+            KeyCode::Char('2') => {
+                return Action::LoginGoogle;
+            }
+            KeyCode::Char('3') => {
+                return Action::ImportToken;
+            }
+            _ => {}
+        }
     }
 
     match key.code {
@@ -54,7 +86,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        // Number keys for quick student selection (always works)
+        // Number keys for quick student selection (only when not on Settings tab)
         KeyCode::Char('1') => {
             app.select_student(0);
             Action::None

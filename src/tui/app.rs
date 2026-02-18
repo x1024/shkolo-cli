@@ -1,5 +1,6 @@
 use crate::api::ShkoloClient;
 use crate::cache::CacheStore;
+use crate::i18n::{Lang, T};
 use crate::models::*;
 use time::OffsetDateTime;
 
@@ -9,21 +10,27 @@ pub enum Tab {
     Homework,
     Grades,
     Schedule,
+    Absences,
+    Messages,
     Notifications,
+    Settings,
 }
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Overview, Tab::Homework, Tab::Grades, Tab::Schedule, Tab::Notifications]
+        &[Tab::Overview, Tab::Homework, Tab::Grades, Tab::Schedule, Tab::Absences, Tab::Messages, Tab::Notifications, Tab::Settings]
     }
 
-    pub fn name(&self) -> &'static str {
+    pub fn name(&self, lang: Lang) -> &'static str {
         match self {
-            Tab::Overview => "Overview",
-            Tab::Homework => "Homework",
-            Tab::Grades => "Grades",
-            Tab::Schedule => "Schedule",
-            Tab::Notifications => "Notifications",
+            Tab::Overview => T::overview(lang),
+            Tab::Homework => T::homework(lang),
+            Tab::Grades => T::grades(lang),
+            Tab::Schedule => T::schedule(lang),
+            Tab::Absences => T::absences(lang),
+            Tab::Messages => T::messages(lang),
+            Tab::Notifications => T::notifications(lang),
+            Tab::Settings => T::settings(lang),
         }
     }
 
@@ -32,18 +39,24 @@ impl Tab {
             Tab::Overview => Tab::Homework,
             Tab::Homework => Tab::Grades,
             Tab::Grades => Tab::Schedule,
-            Tab::Schedule => Tab::Notifications,
-            Tab::Notifications => Tab::Overview,
+            Tab::Schedule => Tab::Absences,
+            Tab::Absences => Tab::Messages,
+            Tab::Messages => Tab::Notifications,
+            Tab::Notifications => Tab::Settings,
+            Tab::Settings => Tab::Overview,
         }
     }
 
     pub fn prev(&self) -> Tab {
         match self {
-            Tab::Overview => Tab::Notifications,
+            Tab::Overview => Tab::Settings,
             Tab::Homework => Tab::Overview,
             Tab::Grades => Tab::Homework,
             Tab::Schedule => Tab::Grades,
-            Tab::Notifications => Tab::Schedule,
+            Tab::Absences => Tab::Schedule,
+            Tab::Messages => Tab::Absences,
+            Tab::Notifications => Tab::Messages,
+            Tab::Settings => Tab::Notifications,
         }
     }
 }
@@ -65,9 +78,11 @@ pub struct StudentData {
     pub grades: Vec<Grade>,
     pub schedule: Vec<ScheduleHour>,
     pub events: Vec<Event>,
+    pub absences: Vec<Absence>,
     pub homework_age: Option<String>,
     pub grades_age: Option<String>,
     pub schedule_age: Option<String>,
+    pub absences_age: Option<String>,
 }
 
 impl StudentData {
@@ -78,9 +93,11 @@ impl StudentData {
             grades: Vec::new(),
             schedule: Vec::new(),
             events: Vec::new(),
+            absences: Vec::new(),
             homework_age: None,
             grades_age: None,
             schedule_age: None,
+            absences_age: None,
         }
     }
 
@@ -128,6 +145,8 @@ pub struct App {
     pub running: bool,
     pub current_tab: Tab,
     pub focus: Focus,
+    pub lang: Lang,
+    pub user_name: Option<String>,
     pub students: Vec<StudentData>,
     pub selected_student: usize,
     pub list_offset: usize,
@@ -137,6 +156,8 @@ pub struct App {
     pub grades_offset: usize,
     pub notifications: Vec<Notification>,
     pub notifications_age: Option<String>,
+    pub messages: Vec<MessageThread>,
+    pub messages_age: Option<String>,
     pub status_message: Option<String>,
     pub loading: bool,
     pub last_refresh: Option<String>,
@@ -147,12 +168,15 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        let now = OffsetDateTime::now_utc();
+        // Use local time for schedule/homework comparison
+        let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
         let today = format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
         Self {
             running: true,
             current_tab: Tab::Overview,
             focus: Focus::Students,
+            lang: Lang::default(), // Bulgarian by default
+            user_name: None,
             students: Vec::new(),
             selected_student: 0,
             list_offset: 0,
@@ -161,6 +185,8 @@ impl App {
             grades_offset: 0,
             notifications: Vec::new(),
             notifications_age: None,
+            messages: Vec::new(),
+            messages_age: None,
             status_message: None,
             loading: false,
             last_refresh: None,
@@ -175,7 +201,8 @@ impl App {
     }
 
     pub fn update_time(&mut self) {
-        let now = OffsetDateTime::now_utc();
+        // Use local time for schedule comparison (not UTC)
+        let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
         self.current_time = (now.hour(), now.minute());
     }
 
@@ -300,6 +327,12 @@ impl App {
                     data.events = events;
                 }
 
+                // Load absences
+                if let Some((absences, age, _)) = cache.get_absences(student.id) {
+                    data.absences = absences;
+                    data.absences_age = Some(age);
+                }
+
                 self.students.push(data);
             }
         }
@@ -308,6 +341,12 @@ impl App {
         if let Some((notifications, age, _)) = cache.get_notifications() {
             self.notifications = notifications;
             self.notifications_age = Some(age);
+        }
+
+        // Load messages
+        if let Some((messages, age, _)) = cache.get_messages() {
+            self.messages = messages;
+            self.messages_age = Some(age);
         }
     }
 
@@ -394,6 +433,22 @@ impl App {
                 let _ = cache.save_events(student.id, &events);
             }
 
+            // Fetch absences
+            let should_refresh_absences = force || cache.get_absences(student.id)
+                .map(|(_, _, expired)| expired)
+                .unwrap_or(true);
+
+            if should_refresh_absences {
+                if let Ok(absences) = self.fetch_absences(client, student.id).await {
+                    data.absences = absences.clone();
+                    data.absences_age = Some("just now".to_string());
+                    let _ = cache.save_absences(student.id, &absences);
+                }
+            } else if let Some((absences, age, _)) = cache.get_absences(student.id) {
+                data.absences = absences;
+                data.absences_age = Some(age);
+            }
+
             self.students.push(data);
         }
 
@@ -411,6 +466,22 @@ impl App {
         } else if let Some((notifications, age, _)) = cache.get_notifications() {
             self.notifications = notifications;
             self.notifications_age = Some(age);
+        }
+
+        // Fetch messages (global, not per-student)
+        let should_refresh_messages = force || cache.get_messages()
+            .map(|(_, _, expired)| expired)
+            .unwrap_or(true);
+
+        if should_refresh_messages {
+            if let Ok(messages) = self.fetch_messages(client).await {
+                self.messages = messages.clone();
+                self.messages_age = Some("just now".to_string());
+                let _ = cache.save_messages(&messages);
+            }
+        } else if let Some((messages, age, _)) = cache.get_messages() {
+            self.messages = messages;
+            self.messages_age = Some(age);
         }
 
         self.last_refresh = Some({
@@ -498,6 +569,31 @@ impl App {
             .collect();
 
         Ok(notifications)
+    }
+
+    async fn fetch_absences(&self, client: &ShkoloClient, student_id: i64) -> anyhow::Result<Vec<Absence>> {
+        let response = client.get_absences(student_id).await?;
+
+        let mut absences: Vec<Absence> = response.absences
+            .unwrap_or_default()
+            .iter()
+            .map(Absence::from_raw)
+            .collect();
+
+        // Sort by date (newest first)
+        absences.sort_by(|a, b| b.date_sort.cmp(&a.date_sort));
+
+        Ok(absences)
+    }
+
+    async fn fetch_messages(&self, client: &ShkoloClient) -> anyhow::Result<Vec<MessageThread>> {
+        let raw_threads = client.get_messenger_threads(None).await?;
+
+        let messages: Vec<MessageThread> = raw_threads.iter()
+            .map(MessageThread::from_raw)
+            .collect();
+
+        Ok(messages)
     }
 }
 
