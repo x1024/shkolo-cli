@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, Tab};
+use super::app::{App, Focus, Tab};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -60,21 +60,29 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Homework => draw_homework(frame, app, chunks[1]),
         Tab::Grades => draw_grades(frame, app, chunks[1]),
         Tab::Schedule => draw_schedule(frame, app, chunks[1]),
+        Tab::Notifications => draw_notifications(frame, app, chunks[1]),
     }
 }
 
 fn draw_students_list(frame: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.focus == Focus::Students;
+
     let items: Vec<ListItem> = app.students
         .iter()
         .enumerate()
         .map(|(i, data)| {
-            let style = if i == app.selected_student {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            let is_selected = i == app.selected_student;
+            let style = if is_selected {
+                if is_focused {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                }
             } else {
-                Style::default()
+                Style::default().fg(Color::DarkGray)
             };
 
-            let prefix = if i == app.selected_student { "> " } else { "  " };
+            let prefix = if is_selected { "> " } else { "  " };
             let class_suffix = data.student.class_name
                 .as_ref()
                 .map(|c| format!(" {}", c))
@@ -85,8 +93,17 @@ fn draw_students_list(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    let border_style = if is_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Students "));
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(" Students "));
 
     frame.render_widget(list, area);
 }
@@ -95,19 +112,21 @@ fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
+            Constraint::Percentage(40),  // Schedule
+            Constraint::Percentage(35),  // Recent homework
+            Constraint::Percentage(25),  // Grades summary
         ])
         .split(area);
 
-    // Today's schedule
-    draw_today_schedule(frame, app, chunks[0]);
-
-    // Upcoming events/tests
-    draw_upcoming_events(frame, app, chunks[1]);
+    draw_overview_schedule(frame, app, chunks[0]);
+    draw_overview_homework(frame, app, chunks[1]);
+    draw_overview_grades(frame, app, chunks[2]);
 }
 
-fn draw_today_schedule(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_overview_schedule(frame: &mut Frame, app: &App, area: Rect) {
+    let current_time = app.current_time;
+    let current_minutes = current_time.0 as i32 * 60 + current_time.1 as i32;
+
     let content = if let Some(data) = app.current_student() {
         if data.schedule.is_empty() {
             vec![ListItem::new("  No classes scheduled for today")]
@@ -115,62 +134,80 @@ fn draw_today_schedule(frame: &mut Frame, app: &App, area: Rect) {
             data.schedule
                 .iter()
                 .map(|hour| {
+                    // Parse times to determine if lesson has passed
+                    let (from_h, from_m) = parse_time(&hour.from_time);
+                    let (to_h, to_m) = parse_time(&hour.to_time);
+                    let from_mins = from_h * 60 + from_m;
+                    let to_mins = to_h * 60 + to_m;
+
+                    let is_past = to_mins < current_minutes;
+                    let is_current = from_mins <= current_minutes && current_minutes < to_mins;
+
                     let time = format!("{}-{}", hour.from_time, hour.to_time);
-                    let main_line = format!(
-                        "  {}. [{}] {}",
-                        hour.hour_number, time, hour.subject
-                    );
 
-                    let mut lines = vec![Line::from(main_line)];
-
-                    if let Some(ref teacher) = hour.teacher {
-                        lines.push(Line::from(format!("     Teacher: {}", teacher)));
-                    }
-
-                    if let Some(ref homework) = hour.homework {
-                        lines.push(Line::from(Span::styled(
-                            format!("     HW: {}", homework),
-                            Style::default().fg(Color::Cyan),
-                        )));
-                    }
-
-                    ListItem::new(lines)
-                })
-                .collect()
-        }
-    } else {
-        vec![ListItem::new("  No student selected")]
-    };
-
-    let title = format!(" Today's Schedule ({}) ", app.current_date);
-    let list = List::new(content)
-        .block(Block::default().borders(Borders::ALL).title(title));
-
-    frame.render_widget(list, area);
-}
-
-fn draw_upcoming_events(frame: &mut Frame, app: &App, area: Rect) {
-    let content = if let Some(data) = app.current_student() {
-        if data.events.is_empty() {
-            vec![ListItem::new("  No upcoming events")]
-        } else {
-            data.events
-                .iter()
-                .take(10)
-                .map(|event| {
-                    let style = if event.is_test {
-                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                    let style = if is_current {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else if is_past {
+                        Style::default().fg(Color::DarkGray)
                     } else {
                         Style::default()
                     };
 
-                    let prefix = if event.is_test { "[TEST] " } else { "" };
+                    let marker = if is_current { " <" } else { "" };
 
-                    ListItem::new(format!(
-                        "  {} {} - {}",
-                        event.start_date, prefix, event.title
-                    ))
-                    .style(style)
+                    let line = format!(
+                        "  {}. [{}] {}{}",
+                        hour.hour_number, time, hour.subject, marker
+                    );
+
+                    ListItem::new(line).style(style)
+                })
+                .collect()
+        }
+    } else {
+        vec![ListItem::new("  No student selected")]
+    };
+
+    let time_str = format!("{:02}:{:02}", current_time.0, current_time.1);
+    let title = format!(" Today's Schedule ({}) [{}] ", app.current_date, time_str);
+
+    let is_focused = app.focus == Focus::Content;
+    let border_style = if is_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
+    let list = List::new(content)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title));
+
+    frame.render_widget(list, area);
+}
+
+fn draw_overview_homework(frame: &mut Frame, app: &App, area: Rect) {
+    let content = if let Some(data) = app.current_student() {
+        let recent = data.recent_homework();
+        if recent.is_empty() {
+            vec![ListItem::new("  No recent homework")]
+        } else {
+            recent.iter()
+                .take(5)
+                .map(|hw| {
+                    let due_str = hw.due_date
+                        .as_ref()
+                        .map(|d| format!(" -> {}", d))
+                        .unwrap_or_default();
+
+                    let line = format!(
+                        "  [{}] {}{}: {}",
+                        hw.date, hw.subject, due_str,
+                        truncate(&hw.text, 40)
+                    );
+
+                    ListItem::new(line)
                 })
                 .collect()
         }
@@ -179,7 +216,37 @@ fn draw_upcoming_events(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let list = List::new(content)
-        .block(Block::default().borders(Borders::ALL).title(" Upcoming Events "));
+        .block(Block::default().borders(Borders::ALL).title(" Recent Homework "));
+
+    frame.render_widget(list, area);
+}
+
+fn draw_overview_grades(frame: &mut Frame, app: &App, area: Rect) {
+    let content = if let Some(data) = app.current_student() {
+        let total = data.total_grades_count();
+        let summary = data.recent_grades_summary();
+
+        if summary.is_empty() {
+            vec![ListItem::new(format!("  Total grades: {}", total))]
+        } else {
+            let mut items = vec![
+                ListItem::new(format!("  Total grades: {}", total)),
+                ListItem::new(""),
+            ];
+
+            for (subject, grades) in summary {
+                let grades_str = grades.join(", ");
+                items.push(ListItem::new(format!("  {}: {}", truncate(subject, 20), grades_str)));
+            }
+
+            items
+        }
+    } else {
+        vec![ListItem::new("  No student selected")]
+    };
+
+    let list = List::new(content)
+        .block(Block::default().borders(Borders::ALL).title(" Grades Summary "));
 
     frame.render_widget(list, area);
 }
@@ -221,8 +288,19 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_else(|| "unknown".to_string());
 
     let title = format!(" Homework (newest first) [{}] ", age);
+
+    let is_focused = app.focus == Focus::Content;
+    let border_style = if is_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
     let list = List::new(content)
-        .block(Block::default().borders(Borders::ALL).title(title));
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title));
 
     frame.render_widget(list, area);
 }
@@ -294,13 +372,27 @@ fn draw_grades(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_else(|| "unknown".to_string());
 
     let title = format!(" Grades [{}] ", age);
+
+    let is_focused = app.focus == Focus::Content;
+    let border_style = if is_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
     let list = List::new(content)
-        .block(Block::default().borders(Borders::ALL).title(title));
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title));
 
     frame.render_widget(list, area);
 }
 
 fn draw_schedule(frame: &mut Frame, app: &App, area: Rect) {
+    let current_time = app.current_time;
+    let current_minutes = current_time.0 as i32 * 60 + current_time.1 as i32;
+
     let content = if let Some(data) = app.current_student() {
         if data.schedule.is_empty() {
             vec![ListItem::new("  No schedule for this day")]
@@ -308,21 +400,51 @@ fn draw_schedule(frame: &mut Frame, app: &App, area: Rect) {
             data.schedule
                 .iter()
                 .map(|hour| {
+                    let (from_h, from_m) = parse_time(&hour.from_time);
+                    let (to_h, to_m) = parse_time(&hour.to_time);
+                    let from_mins = from_h * 60 + from_m;
+                    let to_mins = to_h * 60 + to_m;
+
+                    let is_past = to_mins < current_minutes;
+                    let is_current = from_mins <= current_minutes && current_minutes < to_mins;
+
                     let time = format!("{}-{}", hour.from_time, hour.to_time);
+
+                    let header_style = if is_current {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else if is_past {
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().add_modifier(Modifier::BOLD)
+                    };
+
+                    let detail_style = if is_past {
+                        Style::default().fg(Color::DarkGray)
+                    } else {
+                        Style::default()
+                    };
+
+                    let marker = if is_current { " <NOW" } else { "" };
 
                     let mut lines = vec![
                         Line::from(Span::styled(
-                            format!("  {}. [{}] {}", hour.hour_number, time, hour.subject),
-                            Style::default().add_modifier(Modifier::BOLD),
+                            format!("  {}. [{}] {}{}", hour.hour_number, time, hour.subject, marker),
+                            header_style,
                         )),
                     ];
 
                     if let Some(ref teacher) = hour.teacher {
-                        lines.push(Line::from(format!("     Teacher: {}", teacher)));
+                        lines.push(Line::from(Span::styled(
+                            format!("     Teacher: {}", teacher),
+                            detail_style,
+                        )));
                     }
 
                     if let Some(ref topic) = hour.topic {
-                        lines.push(Line::from(format!("     Topic: {}", topic)));
+                        lines.push(Line::from(Span::styled(
+                            format!("     Topic: {}", topic),
+                            detail_style,
+                        )));
                     }
 
                     if let Some(ref homework) = hour.homework {
@@ -346,9 +468,88 @@ fn draw_schedule(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|d| d.schedule_age.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let title = format!(" Schedule for {} [{}] ", app.current_date, age);
+    let time_str = format!("{:02}:{:02}", current_time.0, current_time.1);
+    let title = format!(" Schedule for {} [{}] ({}) ", app.current_date, age, time_str);
+
+    let is_focused = app.focus == Focus::Content;
+    let border_style = if is_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
     let list = List::new(content)
-        .block(Block::default().borders(Borders::ALL).title(title));
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title));
+
+    frame.render_widget(list, area);
+}
+
+fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
+    let content = if app.notifications.is_empty() {
+        vec![ListItem::new("  No notifications")]
+    } else {
+        app.notifications
+            .iter()
+            .skip(app.list_offset)
+            .take(area.height.saturating_sub(2) as usize / 3)
+            .map(|notif| {
+                let read_style = if notif.is_read {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default().add_modifier(Modifier::BOLD)
+                };
+
+                let read_marker = if notif.is_read { "" } else { "[NEW] " };
+
+                let mut lines = vec![
+                    Line::from(Span::styled(
+                        format!("  {}{}", read_marker, notif.title),
+                        read_style,
+                    )),
+                ];
+
+                if let Some(ref body) = notif.body {
+                    lines.push(Line::from(format!("    {}", truncate(body, 60))));
+                }
+
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", notif.date),
+                    Style::default().fg(Color::DarkGray),
+                )));
+
+                lines.push(Line::from(""));
+
+                ListItem::new(lines)
+            })
+            .collect()
+    };
+
+    let age = app.notifications_age
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let unread_count = app.notifications.iter().filter(|n| !n.is_read).count();
+    let title = if unread_count > 0 {
+        format!(" Notifications ({} unread) [{}] ", unread_count, age)
+    } else {
+        format!(" Notifications [{}] ", age)
+    };
+
+    let is_focused = app.focus == Focus::Content;
+    let border_style = if is_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
+    let list = List::new(content)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title));
 
     frame.render_widget(list, area);
 }
@@ -367,7 +568,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .map(|t| format!("Last: {}", t))
         .unwrap_or_default();
 
-    let help = "[R]efresh [Q]uit [j/k]Navigate [Tab]Switch [1-3]Student";
+    let focus_hint = match app.focus {
+        Focus::Students => "[Tab]->Content",
+        Focus::Content => "[Tab]->Students",
+    };
+
+    let help = format!("[R]efresh [Q]uit [</>]Tabs [^v]Select {} [1-5]Student", focus_hint);
 
     let content = Line::from(vec![
         Span::styled(
@@ -402,5 +608,24 @@ fn calculate_average(grades: &[String]) -> Option<f64> {
         None
     } else {
         Some(numeric.iter().sum::<f64>() / numeric.len() as f64)
+    }
+}
+
+fn parse_time(time_str: &str) -> (i32, i32) {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() >= 2 {
+        let h = parts[0].parse().unwrap_or(0);
+        let m = parts[1].parse().unwrap_or(0);
+        (h, m)
+    } else {
+        (0, 0)
+    }
+}
+
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.chars().count() > max_len {
+        format!("{}...", s.chars().take(max_len - 3).collect::<String>())
+    } else {
+        s.to_string()
     }
 }

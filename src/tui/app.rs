@@ -1,7 +1,7 @@
 use crate::api::ShkoloClient;
 use crate::cache::CacheStore;
 use crate::models::*;
-use time::{OffsetDateTime, format_description};
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -9,11 +9,12 @@ pub enum Tab {
     Homework,
     Grades,
     Schedule,
+    Notifications,
 }
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Overview, Tab::Homework, Tab::Grades, Tab::Schedule]
+        &[Tab::Overview, Tab::Homework, Tab::Grades, Tab::Schedule, Tab::Notifications]
     }
 
     pub fn name(&self) -> &'static str {
@@ -22,6 +23,7 @@ impl Tab {
             Tab::Homework => "Homework",
             Tab::Grades => "Grades",
             Tab::Schedule => "Schedule",
+            Tab::Notifications => "Notifications",
         }
     }
 
@@ -30,18 +32,26 @@ impl Tab {
             Tab::Overview => Tab::Homework,
             Tab::Homework => Tab::Grades,
             Tab::Grades => Tab::Schedule,
-            Tab::Schedule => Tab::Overview,
+            Tab::Schedule => Tab::Notifications,
+            Tab::Notifications => Tab::Overview,
         }
     }
 
     pub fn prev(&self) -> Tab {
         match self {
-            Tab::Overview => Tab::Schedule,
+            Tab::Overview => Tab::Notifications,
             Tab::Homework => Tab::Overview,
             Tab::Grades => Tab::Homework,
             Tab::Schedule => Tab::Grades,
+            Tab::Notifications => Tab::Schedule,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Students,
+    Content,
 }
 
 #[derive(Debug, Clone)]
@@ -69,37 +79,87 @@ impl StudentData {
             schedule_age: None,
         }
     }
+
+    /// Get recent homework (last 2-3 days)
+    pub fn recent_homework(&self) -> Vec<&Homework> {
+        let now = OffsetDateTime::now_utc();
+        let today = format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
+
+        self.homework.iter()
+            .filter(|hw| {
+                hw.date_sort.as_ref()
+                    .map(|d| d >= &today[..8].to_string() || d.starts_with(&today[..7]))
+                    .unwrap_or(true)
+            })
+            .take(10)
+            .collect()
+    }
+
+    /// Count total grades across all subjects
+    pub fn total_grades_count(&self) -> usize {
+        self.grades.iter()
+            .map(|g| g.term1_grades.len() + g.term2_grades.len())
+            .sum()
+    }
+
+    /// Get recent grades (last few per subject)
+    pub fn recent_grades_summary(&self) -> Vec<(&str, Vec<&str>)> {
+        self.grades.iter()
+            .filter(|g| !g.term1_grades.is_empty() || !g.term2_grades.is_empty())
+            .take(5)
+            .map(|g| {
+                let recent: Vec<&str> = g.term2_grades.iter()
+                    .chain(g.term1_grades.iter())
+                    .rev()
+                    .take(3)
+                    .map(|s| s.as_str())
+                    .collect();
+                (g.subject.as_str(), recent)
+            })
+            .collect()
+    }
 }
 
 pub struct App {
     pub running: bool,
     pub current_tab: Tab,
+    pub focus: Focus,
     pub students: Vec<StudentData>,
     pub selected_student: usize,
     pub list_offset: usize,
+    pub notifications: Vec<Notification>,
+    pub notifications_age: Option<String>,
     pub status_message: Option<String>,
     pub loading: bool,
     pub last_refresh: Option<String>,
     pub current_date: String,
+    pub current_time: (u8, u8), // (hour, minute)
 }
 
 impl App {
     pub fn new() -> Self {
-        let today = {
-            let now = OffsetDateTime::now_utc();
-            format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day())
-        };
+        let now = OffsetDateTime::now_utc();
+        let today = format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
         Self {
             running: true,
             current_tab: Tab::Overview,
+            focus: Focus::Students,
             students: Vec::new(),
             selected_student: 0,
             list_offset: 0,
+            notifications: Vec::new(),
+            notifications_age: None,
             status_message: None,
             loading: false,
             last_refresh: None,
             current_date: today,
+            current_time: (now.hour(), now.minute()),
         }
+    }
+
+    pub fn update_time(&mut self) {
+        let now = OffsetDateTime::now_utc();
+        self.current_time = (now.hour(), now.minute());
     }
 
     pub fn quit(&mut self) {
@@ -113,6 +173,14 @@ impl App {
 
     pub fn prev_tab(&mut self) {
         self.current_tab = self.current_tab.prev();
+        self.list_offset = 0;
+    }
+
+    pub fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            Focus::Students => Focus::Content,
+            Focus::Content => Focus::Students,
+        };
         self.list_offset = 0;
     }
 
@@ -151,10 +219,6 @@ impl App {
 
     pub fn current_student(&self) -> Option<&StudentData> {
         self.students.get(self.selected_student)
-    }
-
-    pub fn current_student_mut(&mut self) -> Option<&mut StudentData> {
-        self.students.get_mut(self.selected_student)
     }
 
     pub fn set_status(&mut self, message: impl Into<String>) {
@@ -196,6 +260,12 @@ impl App {
 
                 self.students.push(data);
             }
+        }
+
+        // Load notifications
+        if let Some((notifications, age, _)) = cache.get_notifications() {
+            self.notifications = notifications;
+            self.notifications_age = Some(age);
         }
     }
 
@@ -285,6 +355,22 @@ impl App {
             self.students.push(data);
         }
 
+        // Fetch notifications
+        let should_refresh_notifications = force || cache.get_notifications()
+            .map(|(_, _, expired)| expired)
+            .unwrap_or(true);
+
+        if should_refresh_notifications {
+            if let Ok(notifications) = self.fetch_notifications(client).await {
+                self.notifications = notifications.clone();
+                self.notifications_age = Some("just now".to_string());
+                let _ = cache.save_notifications(&notifications);
+            }
+        } else if let Some((notifications, age, _)) = cache.get_notifications() {
+            self.notifications = notifications;
+            self.notifications_age = Some(age);
+        }
+
         self.last_refresh = Some({
             let now = OffsetDateTime::now_utc();
             format!("{:02}:{:02}", now.hour(), now.minute())
@@ -359,6 +445,17 @@ impl App {
         schedule.sort_by_key(|h| h.hour_number);
 
         Ok(schedule)
+    }
+
+    async fn fetch_notifications(&self, client: &ShkoloClient) -> anyhow::Result<Vec<Notification>> {
+        let response = client.get_notifications(1).await?;
+
+        let raw = response.data.or(response.notifications).unwrap_or_default();
+        let notifications: Vec<Notification> = raw.iter()
+            .map(Notification::from_raw)
+            .collect();
+
+        Ok(notifications)
     }
 }
 

@@ -300,6 +300,9 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
     // Main loop
     loop {
+        // Update time for schedule highlighting
+        app.update_time();
+
         terminal.draw(|f| draw(f, &app))?;
 
         if event::poll(Duration::from_millis(100))? {
