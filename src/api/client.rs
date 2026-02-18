@@ -250,6 +250,78 @@ impl ShkoloClient {
     pub fn google_client_id() -> &'static str {
         GOOGLE_CLIENT_ID
     }
+
+    /// Get absences for a pupil
+    pub async fn get_absences(&self, pupil_id: i64) -> Result<AbsencesResponse> {
+        self.get(&format!("/v1/diary/pupils/{}/absences", pupil_id)).await
+    }
+
+    /// Get messages (testing endpoint discovery)
+    pub async fn get_messages(&self) -> Result<serde_json::Value> {
+        self.get("/v1/messages").await
+    }
+
+    /// Get conversations (testing endpoint discovery)
+    pub async fn get_conversations(&self) -> Result<serde_json::Value> {
+        self.get("/v1/conversations").await
+    }
+
+    /// Get inbox (testing endpoint discovery)
+    pub async fn get_inbox(&self) -> Result<serde_json::Value> {
+        self.get("/v1/inbox").await
+    }
+
+    /// Get chat threads (testing endpoint discovery)
+    pub async fn get_chat_threads(&self) -> Result<serde_json::Value> {
+        self.get("/v1/chat/threads").await
+    }
+
+    /// Get chat (testing endpoint discovery)
+    pub async fn get_chat(&self) -> Result<serde_json::Value> {
+        self.get("/v1/chat").await
+    }
+
+    /// Get diary messages (testing endpoint discovery)
+    pub async fn get_diary_messages(&self) -> Result<serde_json::Value> {
+        self.get("/v1/diary/messages").await
+    }
+
+    /// Test various endpoints
+    pub async fn test_endpoint(&self, path: &str) -> Result<serde_json::Value> {
+        self.get(path).await
+    }
+
+    // Messenger (Chat/Messages)
+
+    /// Get message folders
+    pub async fn get_messenger_folders(&self) -> Result<Vec<MessageFolder>> {
+        let response: serde_json::Value = self.get("/v1/messenger/folders").await?;
+        // The response is directly an array of folders
+        let folders: Vec<MessageFolder> = serde_json::from_value(response)?;
+        Ok(folders)
+    }
+
+    /// Get threads in a folder
+    pub async fn get_messenger_threads(&self, folder_id: Option<i64>) -> Result<Vec<MessageThreadRaw>> {
+        let response: serde_json::Value = match folder_id {
+            Some(id) => self.get(&format!("/v1/messenger/threads?folderId={}", id)).await?,
+            None => self.get("/v1/messenger/threads").await?,
+        };
+        // The response is directly an array of threads
+        let threads: Vec<MessageThreadRaw> = serde_json::from_value(response)?;
+        Ok(threads)
+    }
+
+    /// Get a specific thread
+    pub async fn get_messenger_thread(&self, thread_id: i64) -> Result<serde_json::Value> {
+        self.get(&format!("/v1/messenger/threads/{}", thread_id)).await
+    }
+
+    /// Check if user can send messages
+    pub async fn can_send_messages(&self) -> Result<bool> {
+        let response: serde_json::Value = self.get("/v1/messenger/canSendMessages").await?;
+        Ok(response.get("canSendMessages").and_then(|v| v.as_bool()).unwrap_or(false))
+    }
 }
 
 impl Default for ShkoloClient {

@@ -276,6 +276,50 @@ impl CacheStore {
         }
     }
 
+    // Absences cache (per student)
+
+    pub fn load_absences(&self, student_id: i64) -> Result<CachedData<Vec<Absence>>> {
+        self.read_file(&format!("absences_{}", student_id))
+    }
+
+    pub fn save_absences(&self, student_id: i64, absences: &[Absence]) -> Result<()> {
+        let cached = CachedData::new(absences.to_vec());
+        self.write_file(&format!("absences_{}", student_id), &cached)
+    }
+
+    pub fn get_absences(&self, student_id: i64) -> Option<(Vec<Absence>, String, bool)> {
+        match self.load_absences(student_id) {
+            Ok(cached) => {
+                let expired = cached.is_expired(self.ttl_seconds);
+                let age = cached.age_string();
+                Some((cached.data, age, expired))
+            }
+            Err(_) => None,
+        }
+    }
+
+    // Messages cache (global, not per student)
+
+    pub fn load_messages(&self) -> Result<CachedData<Vec<MessageThread>>> {
+        self.read_file("messages")
+    }
+
+    pub fn save_messages(&self, messages: &[MessageThread]) -> Result<()> {
+        let cached = CachedData::new(messages.to_vec());
+        self.write_file("messages", &cached)
+    }
+
+    pub fn get_messages(&self) -> Option<(Vec<MessageThread>, String, bool)> {
+        match self.load_messages() {
+            Ok(cached) => {
+                let expired = cached.is_expired(self.ttl_seconds);
+                let age = cached.age_string();
+                Some((cached.data, age, expired))
+            }
+            Err(_) => None,
+        }
+    }
+
     // Cache management
 
     pub fn clear(&self) -> Result<()> {
