@@ -84,6 +84,12 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
+    // Notifications is global (not per-student), so show it full-width
+    if app.current_tab == Tab::Notifications {
+        draw_notifications(frame, app, area);
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -99,7 +105,7 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Homework => draw_homework(frame, app, chunks[1]),
         Tab::Grades => draw_grades(frame, app, chunks[1]),
         Tab::Schedule => draw_schedule(frame, app, chunks[1]),
-        Tab::Notifications => draw_notifications(frame, app, chunks[1]),
+        Tab::Notifications => unreachable!(), // Handled above
     }
 }
 
@@ -228,6 +234,7 @@ fn draw_overview_schedule(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_overview_homework(frame: &mut Frame, app: &App, area: Rect) {
     let text_width = area.width.saturating_sub(4) as usize;
+    let today = &app.current_date;
 
     let content = if let Some(data) = app.current_student() {
         let recent = data.recent_homework();
@@ -237,6 +244,17 @@ fn draw_overview_homework(frame: &mut Frame, app: &App, area: Rect) {
             recent.iter()
                 .take(5)
                 .flat_map(|hw| {
+                    // Check if homework is due today or in the future
+                    let is_future = hw.due_date_sort.as_ref()
+                        .map(|d| d >= today)
+                        .unwrap_or(true);
+
+                    let style = if is_future {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+
                     let due_str = hw.due_date
                         .as_ref()
                         .map(|d| format!(" -> {}", d))
@@ -245,13 +263,13 @@ fn draw_overview_homework(frame: &mut Frame, app: &App, area: Rect) {
                     let mut lines = vec![
                         Line::from(Span::styled(
                             format!("  [{}] {}{}", hw.date, hw.subject, due_str),
-                            Style::default().add_modifier(Modifier::BOLD),
+                            style.add_modifier(Modifier::BOLD),
                         )),
                     ];
 
                     // Wrap the homework text
                     for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
-                        lines.push(Line::from(wrapped_line));
+                        lines.push(Line::from(Span::styled(wrapped_line, style)));
                     }
 
                     vec![ListItem::new(lines)]
@@ -287,13 +305,37 @@ fn draw_overview_grades(frame: &mut Frame, app: &App, area: Rect) {
             vec![ListItem::new(format!("  Total grades: {}", total))]
         } else {
             let mut items = vec![
-                ListItem::new(format!("  Total grades: {}", total)),
-                ListItem::new(""),
+                ListItem::new(Line::from(Span::styled(
+                    format!("  Total grades: {}", total),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ))),
             ];
 
             for (subject, grades) in summary {
-                let grades_str = grades.join(", ");
-                items.push(ListItem::new(format!("  {}: {}", truncate(subject, 20), grades_str)));
+                // Calculate average for these grades
+                let grade_strings: Vec<String> = grades.iter().map(|s| s.to_string()).collect();
+                let avg = calculate_average(&grade_strings);
+
+                let mut spans = vec![
+                    Span::raw(format!("  {}: ", truncate(subject, 15))),
+                ];
+
+                // Average first (colored)
+                if let Some(a) = avg {
+                    spans.push(Span::styled(
+                        format!("{:.1}", a),
+                        Style::default().fg(average_color(a)).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::raw(" <- "));
+                }
+
+                // Individual grades (colored)
+                for (i, g) in grades.iter().enumerate() {
+                    if i > 0 { spans.push(Span::raw(", ")); }
+                    spans.push(Span::styled(g.to_string(), Style::default().fg(grade_color(g))));
+                }
+
+                items.push(ListItem::new(Line::from(spans)));
             }
 
             items
@@ -439,7 +481,7 @@ fn draw_grades(frame: &mut Frame, app: &App, area: Rect) {
             data.grades
                 .iter()
                 .skip(app.list_offset)
-                .take(area.height.saturating_sub(2) as usize / 4)
+                .take(area.height.saturating_sub(2) as usize / 5)
                 .map(|grade| {
                     let mut lines = vec![
                         Line::from(Span::styled(
@@ -448,38 +490,70 @@ fn draw_grades(frame: &mut Frame, app: &App, area: Rect) {
                         )),
                     ];
 
+                    // Term 1: Show average first, then grades
                     if !grade.term1_grades.is_empty() {
-                        let grades_str = grade.term1_grades.join(", ");
                         let avg = calculate_average(&grade.term1_grades);
-                        let avg_str = avg.map(|a| format!(" (avg: {:.2})", a)).unwrap_or_default();
-                        lines.push(Line::from(format!("    Term 1: {}{}", grades_str, avg_str)));
+                        let mut spans = vec![Span::raw("    T1: ")];
+
+                        // Average first (colored)
+                        if let Some(a) = avg {
+                            spans.push(Span::styled(
+                                format!("{:.2}", a),
+                                Style::default().fg(average_color(a)).add_modifier(Modifier::BOLD),
+                            ));
+                            spans.push(Span::raw(" <- "));
+                        }
+
+                        // Individual grades (colored)
+                        for (i, g) in grade.term1_grades.iter().enumerate() {
+                            if i > 0 { spans.push(Span::raw(", ")); }
+                            spans.push(Span::styled(g.clone(), Style::default().fg(grade_color(g))));
+                        }
+
+                        lines.push(Line::from(spans));
                     }
 
                     if let Some(ref final_grade) = grade.term1_final {
                         lines.push(Line::from(Span::styled(
-                            format!("    Term 1 Final: {}", final_grade),
-                            Style::default().fg(Color::Green),
+                            format!("    T1 Final: {}", final_grade),
+                            Style::default().fg(grade_color(final_grade)).add_modifier(Modifier::BOLD),
                         )));
                     }
 
+                    // Term 2: Show average first, then grades
                     if !grade.term2_grades.is_empty() {
-                        let grades_str = grade.term2_grades.join(", ");
                         let avg = calculate_average(&grade.term2_grades);
-                        let avg_str = avg.map(|a| format!(" (avg: {:.2})", a)).unwrap_or_default();
-                        lines.push(Line::from(format!("    Term 2: {}{}", grades_str, avg_str)));
+                        let mut spans = vec![Span::raw("    T2: ")];
+
+                        // Average first (colored)
+                        if let Some(a) = avg {
+                            spans.push(Span::styled(
+                                format!("{:.2}", a),
+                                Style::default().fg(average_color(a)).add_modifier(Modifier::BOLD),
+                            ));
+                            spans.push(Span::raw(" <- "));
+                        }
+
+                        // Individual grades (colored)
+                        for (i, g) in grade.term2_grades.iter().enumerate() {
+                            if i > 0 { spans.push(Span::raw(", ")); }
+                            spans.push(Span::styled(g.clone(), Style::default().fg(grade_color(g))));
+                        }
+
+                        lines.push(Line::from(spans));
                     }
 
                     if let Some(ref final_grade) = grade.term2_final {
                         lines.push(Line::from(Span::styled(
-                            format!("    Term 2 Final: {}", final_grade),
-                            Style::default().fg(Color::Green),
+                            format!("    T2 Final: {}", final_grade),
+                            Style::default().fg(grade_color(final_grade)).add_modifier(Modifier::BOLD),
                         )));
                     }
 
                     if let Some(ref annual) = grade.annual {
                         lines.push(Line::from(Span::styled(
                             format!("    Annual: {}", annual),
-                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                            Style::default().fg(grade_color(annual)).add_modifier(Modifier::BOLD),
                         )));
                     }
 
@@ -664,9 +738,9 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
 
     let unread_count = app.notifications.iter().filter(|n| !n.is_read).count();
     let title = if unread_count > 0 {
-        format!(" Notifications ({} unread) [{}] ", unread_count, age)
+        format!(" Известия / Notifications ({} unread) [{}] ", unread_count, age)
     } else {
-        format!(" Notifications [{}] ", age)
+        format!(" Известия / Notifications (All Students) [{}] ", age)
     };
 
     let is_focused = app.focus == Focus::Content;
@@ -743,6 +817,29 @@ fn calculate_average(grades: &[String]) -> Option<f64> {
     } else {
         Some(numeric.iter().sum::<f64>() / numeric.len() as f64)
     }
+}
+
+/// Get color for a grade value (Bulgarian grading: 2-6 scale)
+/// 6 = Excellent (green), 5 = Very Good (cyan), 4 = Good (yellow)
+/// 3 = Satisfactory (magenta), 2 = Poor (red)
+fn grade_color(grade: &str) -> Color {
+    match grade.chars().next() {
+        Some('6') => Color::Green,
+        Some('5') => Color::Cyan,
+        Some('4') => Color::Yellow,
+        Some('3') => Color::Magenta,
+        Some('2') => Color::Red,
+        _ => Color::White,
+    }
+}
+
+/// Get color for an average grade value
+fn average_color(avg: f64) -> Color {
+    if avg >= 5.5 { Color::Green }
+    else if avg >= 4.5 { Color::Cyan }
+    else if avg >= 3.5 { Color::Yellow }
+    else if avg >= 2.5 { Color::Magenta }
+    else { Color::Red }
 }
 
 fn parse_time(time_str: &str) -> (i32, i32) {
