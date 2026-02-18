@@ -293,6 +293,34 @@ impl App {
         }
     }
 
+    /// Activate the selected notification - navigate to the appropriate tab
+    pub fn activate_notification(&mut self) -> bool {
+        if self.current_tab != Tab::Notifications {
+            return false;
+        }
+
+        if let Some(notification) = self.notifications.get(self.list_offset) {
+            if let Some(ref notification_type) = notification.notification_type {
+                let target_tab = match notification_type.as_str() {
+                    "new_homework" => Some(Tab::Homework),
+                    "new_grade" => Some(Tab::Grades),
+                    "new_absence" => Some(Tab::Absences),
+                    "new_event" | "new_event_reminder" => Some(Tab::Schedule),
+                    "new_message" | "new_thread_message" => Some(Tab::Messages),
+                    _ => None,
+                };
+
+                if let Some(tab) = target_tab {
+                    self.current_tab = tab;
+                    self.list_offset = 0;
+                    self.focus = Focus::Content;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn current_student(&self) -> Option<&StudentData> {
         self.students.get(self.selected_student)
     }

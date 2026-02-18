@@ -122,6 +122,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
+        // Enter to activate/select
+        KeyCode::Enter => {
+            // On Notifications tab, navigate to related tab
+            if app.current_tab == Tab::Notifications {
+                app.activate_notification();
+            }
+            Action::None
+        }
+
         _ => Action::None,
     }
 }
