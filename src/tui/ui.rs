@@ -1294,7 +1294,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let help = format!("{} {} {} {} {} [1-5] [-/+]", T::help_refresh(lang), T::help_quit(lang), T::help_tabs(lang), T::help_select(lang), focus_hint);
 
-    let content = Line::from(vec![
+    // Left side: help text and status
+    let left_content = Line::from(vec![
         Span::styled(
             format!(" {} ", help),
             Style::default().fg(Color::DarkGray),
@@ -1304,22 +1305,41 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             status,
             Style::default().fg(Color::Yellow),
         ),
-        Span::raw("  "),
+    ]);
+
+    // Right side: refresh info and user name
+    let right_content = Line::from(vec![
         Span::styled(
             refresh_info,
             Style::default().fg(Color::Green),
         ),
         Span::raw("  "),
         Span::styled(
-            user_info,
+            format!("{} ", user_info),
             Style::default().fg(Color::Cyan),
         ),
     ]);
 
-    let paragraph = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL));
+    // Split status bar into left and right
+    let inner_area = Block::default().borders(Borders::ALL).inner(area);
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(right_content.width() as u16 + 1),
+        ])
+        .split(inner_area);
 
-    frame.render_widget(paragraph, area);
+    // Render border
+    frame.render_widget(Block::default().borders(Borders::ALL), area);
+
+    // Render left content
+    let left_para = Paragraph::new(left_content);
+    frame.render_widget(left_para, chunks[0]);
+
+    // Render right content (right-aligned)
+    let right_para = Paragraph::new(right_content).alignment(Alignment::Right);
+    frame.render_widget(right_para, chunks[1]);
 }
 
 fn calculate_average(grades: &[String]) -> Option<f64> {
