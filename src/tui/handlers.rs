@@ -42,14 +42,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Down | KeyCode::Char('j') => {
             match app.focus {
                 Focus::Students => app.next_student(),
-                Focus::Content => app.scroll_down(),
+                _ => app.scroll_down(),
             }
             Action::None
         }
         KeyCode::Up | KeyCode::Char('k') => {
             match app.focus {
                 Focus::Students => app.prev_student(),
-                Focus::Content => app.scroll_up(),
+                _ => app.scroll_up(),
             }
             Action::None
         }

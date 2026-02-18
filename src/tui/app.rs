@@ -52,6 +52,10 @@ impl Tab {
 pub enum Focus {
     Students,
     Content,
+    // Overview tab sub-panes
+    OverviewSchedule,
+    OverviewHomework,
+    OverviewGrades,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +131,10 @@ pub struct App {
     pub students: Vec<StudentData>,
     pub selected_student: usize,
     pub list_offset: usize,
+    // Separate scroll offsets for overview sub-panes
+    pub schedule_offset: usize,
+    pub homework_offset: usize,
+    pub grades_offset: usize,
     pub notifications: Vec<Notification>,
     pub notifications_age: Option<String>,
     pub status_message: Option<String>,
@@ -147,6 +155,9 @@ impl App {
             students: Vec::new(),
             selected_student: 0,
             list_offset: 0,
+            schedule_offset: 0,
+            homework_offset: 0,
+            grades_offset: 0,
             notifications: Vec::new(),
             notifications_age: None,
             status_message: None,
@@ -177,9 +188,24 @@ impl App {
     }
 
     pub fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::Students => Focus::Content,
-            Focus::Content => Focus::Students,
+        self.focus = match self.current_tab {
+            Tab::Overview => {
+                // Cycle: Students -> Schedule -> Homework -> Grades -> Students
+                match self.focus {
+                    Focus::Students => Focus::OverviewSchedule,
+                    Focus::OverviewSchedule => Focus::OverviewHomework,
+                    Focus::OverviewHomework => Focus::OverviewGrades,
+                    Focus::OverviewGrades => Focus::Students,
+                    _ => Focus::Students,
+                }
+            }
+            _ => {
+                // Other tabs: Students -> Content -> Students
+                match self.focus {
+                    Focus::Students => Focus::Content,
+                    _ => Focus::Students,
+                }
+            }
         };
         self.list_offset = 0;
     }
@@ -210,11 +236,21 @@ impl App {
     }
 
     pub fn scroll_down(&mut self) {
-        self.list_offset = self.list_offset.saturating_add(1);
+        match self.focus {
+            Focus::OverviewSchedule => self.schedule_offset = self.schedule_offset.saturating_add(1),
+            Focus::OverviewHomework => self.homework_offset = self.homework_offset.saturating_add(1),
+            Focus::OverviewGrades => self.grades_offset = self.grades_offset.saturating_add(1),
+            _ => self.list_offset = self.list_offset.saturating_add(1),
+        }
     }
 
     pub fn scroll_up(&mut self) {
-        self.list_offset = self.list_offset.saturating_sub(1);
+        match self.focus {
+            Focus::OverviewSchedule => self.schedule_offset = self.schedule_offset.saturating_sub(1),
+            Focus::OverviewHomework => self.homework_offset = self.homework_offset.saturating_sub(1),
+            Focus::OverviewGrades => self.grades_offset = self.grades_offset.saturating_sub(1),
+            _ => self.list_offset = self.list_offset.saturating_sub(1),
+        }
     }
 
     pub fn current_student(&self) -> Option<&StudentData> {
