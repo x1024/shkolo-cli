@@ -41,11 +41,25 @@ impl T {
     pub fn absences(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Отсъствия", Lang::En => "Absences" }
     }
+    pub fn feedbacks(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Отзиви", Lang::En => "Feedbacks" }
+    }
     pub fn messages(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Съобщения", Lang::En => "Messages" }
     }
     pub fn settings(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Настройки", Lang::En => "Settings" }
+    }
+
+    // Feedbacks
+    pub fn no_feedbacks(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Няма отзиви", Lang::En => "No feedbacks" }
+    }
+    pub fn positive(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "положителни", Lang::En => "positive" }
+    }
+    pub fn negative(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "отрицателни", Lang::En => "negative" }
     }
 
     // Messages

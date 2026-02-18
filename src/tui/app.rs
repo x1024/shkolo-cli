@@ -11,6 +11,7 @@ pub enum Tab {
     Grades,
     Schedule,
     Absences,
+    Feedbacks,
     Messages,
     Notifications,
     Settings,
@@ -18,7 +19,7 @@ pub enum Tab {
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Overview, Tab::Homework, Tab::Grades, Tab::Schedule, Tab::Absences, Tab::Messages, Tab::Notifications, Tab::Settings]
+        &[Tab::Overview, Tab::Homework, Tab::Grades, Tab::Schedule, Tab::Absences, Tab::Feedbacks, Tab::Messages, Tab::Notifications, Tab::Settings]
     }
 
     pub fn name(&self, lang: Lang) -> &'static str {
@@ -28,6 +29,7 @@ impl Tab {
             Tab::Grades => T::grades(lang),
             Tab::Schedule => T::schedule(lang),
             Tab::Absences => T::absences(lang),
+            Tab::Feedbacks => T::feedbacks(lang),
             Tab::Messages => T::messages(lang),
             Tab::Notifications => T::notifications(lang),
             Tab::Settings => T::settings(lang),
@@ -40,7 +42,8 @@ impl Tab {
             Tab::Homework => Tab::Grades,
             Tab::Grades => Tab::Schedule,
             Tab::Schedule => Tab::Absences,
-            Tab::Absences => Tab::Messages,
+            Tab::Absences => Tab::Feedbacks,
+            Tab::Feedbacks => Tab::Messages,
             Tab::Messages => Tab::Notifications,
             Tab::Notifications => Tab::Settings,
             Tab::Settings => Tab::Overview,
@@ -54,7 +57,8 @@ impl Tab {
             Tab::Grades => Tab::Homework,
             Tab::Schedule => Tab::Grades,
             Tab::Absences => Tab::Schedule,
-            Tab::Messages => Tab::Absences,
+            Tab::Feedbacks => Tab::Absences,
+            Tab::Messages => Tab::Feedbacks,
             Tab::Notifications => Tab::Messages,
             Tab::Settings => Tab::Notifications,
         }
@@ -79,10 +83,12 @@ pub struct StudentData {
     pub schedule: Vec<ScheduleHour>,
     pub events: Vec<Event>,
     pub absences: Vec<Absence>,
+    pub feedbacks: Vec<Feedback>,
     pub homework_age: Option<String>,
     pub grades_age: Option<String>,
     pub schedule_age: Option<String>,
     pub absences_age: Option<String>,
+    pub feedbacks_age: Option<String>,
 }
 
 impl StudentData {
@@ -94,10 +100,12 @@ impl StudentData {
             schedule: Vec::new(),
             events: Vec::new(),
             absences: Vec::new(),
+            feedbacks: Vec::new(),
             homework_age: None,
             grades_age: None,
             schedule_age: None,
             absences_age: None,
+            feedbacks_age: None,
         }
     }
 
@@ -305,6 +313,7 @@ impl App {
                     "new_homework" => Some(Tab::Homework),
                     "new_grade" => Some(Tab::Grades),
                     "new_absence" => Some(Tab::Absences),
+                    "new_feedback" | "new_badge" => Some(Tab::Feedbacks),
                     "new_event" | "new_event_reminder" => Some(Tab::Schedule),
                     "new_message" | "new_thread_message" => Some(Tab::Messages),
                     _ => None,
@@ -366,6 +375,12 @@ impl App {
                 if let Some((absences, age, _)) = cache.get_absences(student.id) {
                     data.absences = absences;
                     data.absences_age = Some(age);
+                }
+
+                // Load feedbacks
+                if let Some((feedbacks, age, _)) = cache.get_feedbacks(student.id) {
+                    data.feedbacks = feedbacks;
+                    data.feedbacks_age = Some(age);
                 }
 
                 self.students.push(data);
@@ -482,6 +497,22 @@ impl App {
             } else if let Some((absences, age, _)) = cache.get_absences(student.id) {
                 data.absences = absences;
                 data.absences_age = Some(age);
+            }
+
+            // Fetch feedbacks
+            let should_refresh_feedbacks = force || cache.get_feedbacks(student.id)
+                .map(|(_, _, expired)| expired)
+                .unwrap_or(true);
+
+            if should_refresh_feedbacks {
+                if let Ok(feedbacks) = self.fetch_feedbacks(client, student.id).await {
+                    data.feedbacks = feedbacks.clone();
+                    data.feedbacks_age = Some("just now".to_string());
+                    let _ = cache.save_feedbacks(student.id, &feedbacks);
+                }
+            } else if let Some((feedbacks, age, _)) = cache.get_feedbacks(student.id) {
+                data.feedbacks = feedbacks;
+                data.feedbacks_age = Some(age);
             }
 
             self.students.push(data);
@@ -623,6 +654,25 @@ impl App {
         });
 
         Ok(absences)
+    }
+
+    async fn fetch_feedbacks(&self, client: &ShkoloClient, student_id: i64) -> anyhow::Result<Vec<Feedback>> {
+        let response = client.get_feedbacks(student_id).await?;
+
+        let mut feedbacks: Vec<Feedback> = response.data
+            .or(response.feedbacks)
+            .unwrap_or_default()
+            .iter()
+            .map(Feedback::from_raw)
+            .collect();
+
+        // Stable sort: by date (newest first), then by subject for ties
+        feedbacks.sort_by(|a, b| {
+            b.date.cmp(&a.date)
+                .then_with(|| a.subject.cmp(&b.subject))
+        });
+
+        Ok(feedbacks)
     }
 
     async fn fetch_messages(&self, client: &ShkoloClient) -> anyhow::Result<Vec<MessageThread>> {

@@ -256,6 +256,11 @@ impl ShkoloClient {
         self.get(&format!("/v1/diary/pupils/{}/absences", pupil_id)).await
     }
 
+    /// Get feedbacks (badges/remarks) for a pupil
+    pub async fn get_feedbacks(&self, pupil_id: i64) -> Result<FeedbacksResponse> {
+        self.get(&format!("/v1/diary/pupils/{}/feedbacks", pupil_id)).await
+    }
+
     /// Get messages (testing endpoint discovery)
     pub async fn get_messages(&self) -> Result<serde_json::Value> {
         self.get("/v1/messages").await

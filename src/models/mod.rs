@@ -5,6 +5,7 @@ pub mod schedule;
 pub mod notification;
 pub mod absence;
 pub mod message;
+pub mod feedback;
 
 pub use student::*;
 pub use homework::*;
@@ -13,3 +14,4 @@ pub use schedule::*;
 pub use notification::*;
 pub use absence::*;
 pub use message::*;
+pub use feedback::*;

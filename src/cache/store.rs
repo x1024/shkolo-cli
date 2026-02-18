@@ -325,6 +325,28 @@ impl CacheStore {
         }
     }
 
+    // Feedbacks cache (per student)
+
+    pub fn load_feedbacks(&self, student_id: i64) -> Result<CachedData<Vec<Feedback>>> {
+        self.read_file(&format!("feedbacks_{}", student_id))
+    }
+
+    pub fn save_feedbacks(&self, student_id: i64, feedbacks: &[Feedback]) -> Result<()> {
+        let cached = CachedData::new(feedbacks.to_vec());
+        self.write_file(&format!("feedbacks_{}", student_id), &cached)
+    }
+
+    pub fn get_feedbacks(&self, student_id: i64) -> Option<(Vec<Feedback>, String, bool)> {
+        match self.load_feedbacks(student_id) {
+            Ok(cached) => {
+                let expired = cached.is_expired(self.ttl_seconds);
+                let age = cached.age_string();
+                Some((cached.data, age, expired))
+            }
+            Err(_) => None,
+        }
+    }
+
     // Cache management
 
     pub fn clear(&self) -> Result<()> {

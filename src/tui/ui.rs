@@ -120,6 +120,7 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Grades => draw_grades(frame, app, chunks[1]),
         Tab::Schedule => draw_schedule(frame, app, chunks[1]),
         Tab::Absences => draw_absences(frame, app, chunks[1]),
+        Tab::Feedbacks => draw_feedbacks(frame, app, chunks[1]),
         Tab::Notifications | Tab::Settings | Tab::Messages => unreachable!(), // Handled above
     }
 }
@@ -881,6 +882,113 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_else(|| "unknown".to_string());
 
     let title = format!(" {} ({}) ", T::absences(lang), age);
+
+    let is_focused = app.focus == Focus::Content;
+    let border_style = if is_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
+    let list = List::new(content)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title));
+
+    frame.render_widget(list, area);
+}
+
+fn draw_feedbacks(frame: &mut Frame, app: &App, area: Rect) {
+    let lang = app.lang;
+
+    let content = if let Some(data) = app.current_student() {
+        if data.feedbacks.is_empty() {
+            vec![ListItem::new(format!("  {}", T::no_feedbacks(lang)))]
+        } else {
+            let mut items = Vec::new();
+
+            // Summary
+            let positive_count = data.feedbacks.iter().filter(|f| f.is_positive).count();
+            let negative_count = data.feedbacks.iter().filter(|f| !f.is_positive).count();
+
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("  {}: ", match lang { crate::i18n::Lang::Bg => "Общо", crate::i18n::Lang::En => "Total" }),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{} ", data.feedbacks.len()),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("("),
+                Span::styled(format!("{} {}", positive_count, T::positive(lang)), Style::default().fg(Color::Green)),
+                Span::raw(", "),
+                Span::styled(format!("{} {}", negative_count, T::negative(lang)), Style::default().fg(Color::Red)),
+                Span::raw(")"),
+            ])));
+
+            items.push(ListItem::new(""));
+            items.push(ListItem::new(Line::from(Span::styled(
+                "  ─────────────────────────────",
+                Style::default().fg(Color::DarkGray),
+            ))));
+            items.push(ListItem::new(""));
+
+            // List feedbacks
+            for feedback in data.feedbacks.iter().skip(app.list_offset) {
+                let emoji = feedback.emoji();
+                let style = if feedback.is_positive {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::Red)
+                };
+
+                items.push(ListItem::new(Line::from(vec![
+                    Span::raw("  "),
+                    Span::raw(emoji),
+                    Span::raw(" "),
+                    Span::styled(&feedback.badge_name, style.add_modifier(Modifier::BOLD)),
+                ])));
+
+                // Subject and teacher
+                items.push(ListItem::new(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(&feedback.subject, Style::default().fg(Color::Cyan)),
+                    Span::raw(" - "),
+                    Span::styled(&feedback.teacher, Style::default().fg(Color::DarkGray)),
+                ])));
+
+                // Comment if present
+                if let Some(ref comment) = feedback.comment {
+                    if !comment.is_empty() {
+                        items.push(ListItem::new(Line::from(vec![
+                            Span::raw("     "),
+                            Span::styled(format!("\"{}\"", comment), Style::default().fg(Color::Gray)),
+                        ])));
+                    }
+                }
+
+                // Date
+                items.push(ListItem::new(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(&feedback.date, Style::default().fg(Color::DarkGray)),
+                ])));
+
+                items.push(ListItem::new(""));
+            }
+
+            items
+        }
+    } else {
+        vec![ListItem::new(format!("  {}", T::no_student(lang)))]
+    };
+
+    let age = app.current_student()
+        .and_then(|d| d.feedbacks_age.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let title = format!(" {} ({}) ", T::feedbacks(lang), age);
 
     let is_focused = app.focus == Focus::Content;
     let border_style = if is_focused {
