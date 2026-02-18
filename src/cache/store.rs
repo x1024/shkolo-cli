@@ -254,6 +254,28 @@ impl CacheStore {
         }
     }
 
+    // Notifications cache (global, not per student)
+
+    pub fn load_notifications(&self) -> Result<CachedData<Vec<Notification>>> {
+        self.read_file("notifications")
+    }
+
+    pub fn save_notifications(&self, notifications: &[Notification]) -> Result<()> {
+        let cached = CachedData::new(notifications.to_vec());
+        self.write_file("notifications", &cached)
+    }
+
+    pub fn get_notifications(&self) -> Option<(Vec<Notification>, String, bool)> {
+        match self.load_notifications() {
+            Ok(cached) => {
+                let expired = cached.is_expired(self.ttl_seconds);
+                let age = cached.age_string();
+                Some((cached.data, age, expired))
+            }
+            Err(_) => None,
+        }
+    }
+
     // Cache management
 
     pub fn clear(&self) -> Result<()> {

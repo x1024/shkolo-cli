@@ -241,6 +241,11 @@ impl ShkoloClient {
         self.get("/v1/events").await
     }
 
+    /// Get notifications
+    pub async fn get_notifications(&self, page: i32) -> Result<NotificationsResponse> {
+        self.get(&format!("/v1/notifications?page={}", page)).await
+    }
+
     /// Get Google OAuth client ID
     pub fn google_client_id() -> &'static str {
         GOOGLE_CLIENT_ID
