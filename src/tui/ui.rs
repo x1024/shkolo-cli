@@ -1158,7 +1158,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Focus::Content => format!("[Tab]->{}", T::students(lang)),
     };
 
-    let help = format!("{} {} {} {} {} [1-5]", T::help_refresh(lang), T::help_quit(lang), T::help_tabs(lang), T::help_select(lang), focus_hint);
+    let help = format!("{} {} {} {} {} [1-5] [[]{}[]]", T::help_refresh(lang), T::help_quit(lang), T::help_tabs(lang), T::help_select(lang), focus_hint, match lang { crate::i18n::Lang::Bg => "Размер", crate::i18n::Lang::En => "Resize" });
 
     let content = Line::from(vec![
         Span::styled(

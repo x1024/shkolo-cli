@@ -7,7 +7,7 @@ mod tui;
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{self, Event},
+    event::{self, Event, MouseEvent, MouseEventKind, EnableMouseCapture, DisableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -323,10 +323,10 @@ async fn run_json_command(
 async fn run_tui(cache: &CacheStore) -> Result<()> {
     let mut client = get_authenticated_client(cache)?;
 
-    // Setup terminal
+    // Setup terminal with mouse support
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -399,8 +399,8 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
         };
 
         if event::poll(poll_timeout)? {
-            if let Event::Key(key) = event::read()? {
-                match handle_key(&mut app, key) {
+            match event::read()? {
+                Event::Key(key) => match handle_key(&mut app, key) {
                     Action::Refresh => {
                         // Show loading state before starting refresh
                         app.loading = true;
@@ -435,7 +435,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                     Action::LoginPassword => {
                         // Temporarily exit raw mode for interactive login
                         disable_raw_mode()?;
-                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                        execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
                         println!("Login with username/password:");
                         if let Err(e) = login(cache, None, None).await {
@@ -451,7 +451,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
                         // Re-enter TUI mode
                         enable_raw_mode()?;
-                        execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                        execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
 
                         // Reload token and refresh data
                         if let Ok(token_data) = cache.load_token() {
@@ -482,7 +482,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                     Action::ImportToken => {
                         // Temporarily exit raw mode for import output
                         disable_raw_mode()?;
-                        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                        execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
                         if let Err(e) = import_token(cache) {
                             eprintln!("Import failed: {}", e);
@@ -493,7 +493,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
                         // Re-enter TUI mode
                         enable_raw_mode()?;
-                        execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                        execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
 
                         // Reload token and refresh data
                         if let Ok(token_data) = cache.load_token() {
@@ -512,7 +512,23 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                         }
                     }
                     Action::None => {}
+                },
+                Event::Mouse(mouse) => {
+                    // Handle mouse events for pane resizing
+                    // The pane border is at x = students_pane_width (after the 3-line header)
+                    let border_x = app.students_pane_width;
+                    match mouse.kind {
+                        MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                            // Only resize if dragging near the border (within 2 chars)
+                            if mouse.row >= 3 { // Skip header area
+                                let new_width = mouse.column.clamp(15, 60);
+                                app.students_pane_width = new_width;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
+                _ => {}
             }
         }
 
@@ -529,7 +545,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
     Ok(())
 }
