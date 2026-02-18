@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::app::App;
+use super::app::{App, Focus};
 
 pub enum Action {
     None,
@@ -22,27 +22,39 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        // Tab navigation
+        // Tab toggles focus between students list and content pane
         KeyCode::Tab => {
-            app.next_tab();
+            app.toggle_focus();
             Action::None
         }
-        KeyCode::BackTab => {
+
+        // Left/Right change tabs
+        KeyCode::Left | KeyCode::Char('h') => {
             app.prev_tab();
             Action::None
         }
+        KeyCode::Right | KeyCode::Char('l') => {
+            app.next_tab();
+            Action::None
+        }
 
-        // List navigation
+        // Up/Down behavior depends on focus
         KeyCode::Down | KeyCode::Char('j') => {
-            app.scroll_down();
+            match app.focus {
+                Focus::Students => app.next_student(),
+                Focus::Content => app.scroll_down(),
+            }
             Action::None
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            app.scroll_up();
+            match app.focus {
+                Focus::Students => app.prev_student(),
+                Focus::Content => app.scroll_up(),
+            }
             Action::None
         }
 
-        // Student selection
+        // Number keys for quick student selection (always works)
         KeyCode::Char('1') => {
             app.select_student(0);
             Action::None
@@ -61,16 +73,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         }
         KeyCode::Char('5') => {
             app.select_student(4);
-            Action::None
-        }
-
-        // Next/prev student
-        KeyCode::Right | KeyCode::Char('l') => {
-            app.next_student();
-            Action::None
-        }
-        KeyCode::Left | KeyCode::Char('h') => {
-            app.prev_student();
             Action::None
         }
 
