@@ -107,7 +107,7 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(30),  // Students list
+            Constraint::Length(app.students_pane_width),  // Resizable students list
             Constraint::Min(40),     // Main content
         ])
         .split(area);
@@ -788,7 +788,12 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
             }
 
             let mut subjects: Vec<_> = subject_counts.into_iter().collect();
-            subjects.sort_by(|a, b| (b.1.0 + b.1.1).cmp(&(a.1.0 + a.1.1))); // Sort by total desc
+            // Stable sort: by total descending, then by subject name for ties
+            subjects.sort_by(|a, b| {
+                let total_a = a.1.0 + a.1.1;
+                let total_b = b.1.0 + b.1.1;
+                total_b.cmp(&total_a).then_with(|| a.0.cmp(&b.0))
+            });
 
             for (subject, (excused, unexcused)) in &subjects {
                 let total_subj = excused + unexcused;

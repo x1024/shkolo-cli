@@ -351,6 +351,12 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
         }
     }
 
+    // Load UI configuration (pane sizes, etc.)
+    let ui_config = cache.load_ui_config();
+    if let Some(width) = ui_config.students_pane_width {
+        app.students_pane_width = width;
+    }
+
     // Load cached data first
     app.load_from_cache(cache).await;
 
@@ -366,15 +372,33 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
         }
     }
 
-    // Main loop
+    // Main loop - resource-efficient event handling
+    let mut last_time_update = std::time::Instant::now();
+
     loop {
-        // Update time for schedule highlighting and tick for animations
-        app.update_time();
-        app.tick();
+        // Update time periodically for schedule highlighting (once per minute is enough)
+        if last_time_update.elapsed() >= Duration::from_secs(60) {
+            app.update_time();
+            last_time_update = std::time::Instant::now();
+        }
+
+        // Tick for loading animation
+        if app.loading {
+            app.tick();
+        }
 
         terminal.draw(|f| draw(f, &app))?;
 
-        if event::poll(Duration::from_millis(100))? {
+        // Determine poll timeout based on loading state
+        let poll_timeout = if app.loading {
+            // Fast polling during loading for spinner animation
+            Duration::from_millis(100)
+        } else {
+            // Block for up to 60 seconds when idle - minimal CPU usage
+            Duration::from_secs(60)
+        };
+
+        if event::poll(poll_timeout)? {
             if let Event::Key(key) = event::read()? {
                 match handle_key(&mut app, key) {
                     Action::Refresh => {
@@ -496,6 +520,12 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
             break;
         }
     }
+
+    // Save UI configuration (pane sizes)
+    let ui_config = cache::UiConfig {
+        students_pane_width: Some(app.students_pane_width),
+    };
+    let _ = cache.save_ui_config(&ui_config);
 
     // Restore terminal
     disable_raw_mode()?;

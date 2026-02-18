@@ -164,6 +164,7 @@ pub struct App {
     pub current_date: String,
     pub current_time: (u8, u8), // (hour, minute)
     pub tick: usize, // Frame counter for animations
+    pub students_pane_width: u16, // Resizable pane width
 }
 
 impl App {
@@ -193,7 +194,13 @@ impl App {
             current_date: today,
             current_time: (now.hour(), now.minute()),
             tick: 0,
+            students_pane_width: 30,
         }
+    }
+
+    pub fn resize_students_pane(&mut self, delta: i16) {
+        let new_width = (self.students_pane_width as i16 + delta).clamp(15, 60) as u16;
+        self.students_pane_width = new_width;
     }
 
     pub fn tick(&mut self) {
@@ -580,8 +587,12 @@ impl App {
             .map(Absence::from_raw)
             .collect();
 
-        // Sort by date (newest first)
-        absences.sort_by(|a, b| b.date_sort.cmp(&a.date_sort));
+        // Stable sort: by date (newest first), then by hour, then by subject for ties
+        absences.sort_by(|a, b| {
+            b.date_sort.cmp(&a.date_sort)
+                .then_with(|| a.hour.cmp(&b.hour))
+                .then_with(|| a.subject.cmp(&b.subject))
+        });
 
         Ok(absences)
     }

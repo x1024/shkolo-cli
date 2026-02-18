@@ -22,6 +22,11 @@ impl Default for CacheMeta {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UiConfig {
+    pub students_pane_width: Option<u16>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenData {
     pub token: String,
@@ -349,6 +354,16 @@ impl CacheStore {
             }
         }
         Ok(())
+    }
+
+    // UI configuration (persistent settings)
+
+    pub fn load_ui_config(&self) -> UiConfig {
+        self.read_file::<UiConfig>("ui_config").unwrap_or_default()
+    }
+
+    pub fn save_ui_config(&self, config: &UiConfig) -> Result<()> {
+        self.write_file("ui_config", config)
     }
 }
 

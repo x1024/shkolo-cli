@@ -1,3 +1,3 @@
 pub mod store;
 
-pub use store::CacheStore;
+pub use store::{CacheStore, UiConfig};

@@ -112,6 +112,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('R') => Action::RefreshAll,
 
+        // Resize students pane
+        KeyCode::Char('[') => {
+            app.resize_students_pane(-2);
+            Action::None
+        }
+        KeyCode::Char(']') => {
+            app.resize_students_pane(2);
+            Action::None
+        }
+
         _ => Action::None,
     }
 }
