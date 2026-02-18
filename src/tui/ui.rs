@@ -1121,8 +1121,10 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         app.notifications
             .iter()
+            .enumerate()
             .skip(app.list_offset)
-            .map(|notif| {
+            .map(|(idx, notif)| {
+                let is_selected = idx == app.list_offset;
                 let read_style = if notif.is_read {
                     Style::default().fg(Color::DarkGray)
                 } else {
@@ -1130,26 +1132,36 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
                 };
 
                 let read_marker = if notif.is_read { "" } else { T::new_marker(lang) };
+                let selected_marker = if is_selected { "▸ " } else { "  " };
 
                 let mut lines = Vec::new();
 
-                // Wrap title
-                let title_text = format!("{}{}", read_marker, notif.title);
-                for wrapped_line in wrap_text(&title_text, text_width, "  ") {
-                    lines.push(Line::from(Span::styled(wrapped_line, read_style)));
+                // Wrap title with selection marker
+                let title_text = format!("{}{}{}", selected_marker, read_marker, notif.title);
+                for (i, wrapped_line) in wrap_text(&title_text, text_width, "  ").into_iter().enumerate() {
+                    if i == 0 {
+                        lines.push(Line::from(Span::styled(wrapped_line, read_style)));
+                    } else {
+                        lines.push(Line::from(Span::styled(wrapped_line, read_style)));
+                    }
                 }
 
                 // Wrap body if present
                 if let Some(ref body) = notif.body {
-                    for wrapped_line in wrap_text(body, text_width, "    ") {
-                        lines.push(Line::from(wrapped_line));
+                    for wrapped_line in wrap_text(body, text_width, "      ") {
+                        lines.push(Line::from(Span::styled(wrapped_line, Style::default().fg(Color::Gray))));
                     }
                 }
 
-                lines.push(Line::from(Span::styled(
-                    format!("    {}", notif.date),
-                    Style::default().fg(Color::DarkGray),
-                )));
+                // Pupil name and date on same line
+                let pupil_info = notif.pupil_names.as_ref()
+                    .map(|p| format!("[{}] ", p))
+                    .unwrap_or_default();
+
+                lines.push(Line::from(vec![
+                    Span::styled(format!("      {}", pupil_info), Style::default().fg(Color::Cyan)),
+                    Span::styled(notif.date.clone(), Style::default().fg(Color::DarkGray)),
+                ]));
 
                 lines.push(Line::from(""));
 
@@ -1163,10 +1175,14 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_else(|| "unknown".to_string());
 
     let unread_count = app.notifications.iter().filter(|n| !n.is_read).count();
+    let enter_hint = match lang {
+        crate::i18n::Lang::Bg => "[Enter]-отвори",
+        crate::i18n::Lang::En => "[Enter]-open",
+    };
     let title = if unread_count > 0 {
-        format!(" {} ({} {}) ({}) ", T::notifications(lang), unread_count, T::unread(lang), age)
+        format!(" {} ({} {}) ({}) {} ", T::notifications(lang), unread_count, T::unread(lang), age, enter_hint)
     } else {
-        format!(" {} ({}) ({}) ", T::notifications(lang), T::all_students(lang), age)
+        format!(" {} ({}) {} ", T::notifications(lang), age, enter_hint)
     };
 
     let is_focused = app.focus == Focus::Content;

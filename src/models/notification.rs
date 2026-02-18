@@ -8,6 +8,7 @@ pub struct Notification {
     pub date: String,
     pub is_read: bool,
     pub notification_type: Option<String>,
+    pub pupil_names: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,10 @@ pub struct NotificationRaw {
     pub notification_trigger_slug: Option<String>,
     #[serde(rename = "type")]
     pub notification_type: Option<String>,
+    // Pupil/child info
+    pub pupil_names: Option<String>,
+    pub pupil_name: Option<String>,
+    pub pupils: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +51,11 @@ impl Notification {
             || raw.is_read.unwrap_or(false)
             || raw.read.unwrap_or(false);
 
+        // Get pupil names from various possible fields
+        let pupil_names = raw.pupil_names.clone()
+            .or_else(|| raw.pupil_name.clone())
+            .or_else(|| raw.pupils.as_ref().map(|p| p.join(", ")));
+
         Self {
             id: raw.id.clone(),
             title: raw.text.clone()
@@ -59,6 +69,7 @@ impl Notification {
             is_read,
             notification_type: raw.notification_trigger_slug.clone()
                 .or_else(|| raw.notification_type.clone()),
+            pupil_names,
         }
     }
 }
