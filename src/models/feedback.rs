@@ -62,12 +62,18 @@ impl Feedback {
         }
     }
 
-    /// Get emoji for badge type
-    pub fn emoji(&self) -> &'static str {
+    /// Get emoji for badge type - use badge_icon if available, otherwise based on is_positive
+    pub fn emoji(&self) -> String {
+        if let Some(ref icon) = self.badge_icon {
+            if !icon.is_empty() {
+                return icon.clone();
+            }
+        }
+        // Fallback based on is_positive
         if self.is_positive {
-            "⭐"
+            "⭐".to_string()
         } else {
-            "⚠️"
+            "⚠️".to_string()
         }
     }
 }

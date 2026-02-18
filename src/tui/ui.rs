@@ -970,19 +970,22 @@ fn draw_feedbacks(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::Red)
                 };
 
+                // Badge name with emoji and date
                 items.push(ListItem::new(Line::from(vec![
                     Span::raw("  "),
-                    Span::raw(emoji),
+                    Span::raw(emoji.clone()),
                     Span::raw(" "),
-                    Span::styled(&feedback.badge_name, style.add_modifier(Modifier::BOLD)),
+                    Span::styled(feedback.badge_name.clone(), style.add_modifier(Modifier::BOLD)),
+                    Span::raw("  "),
+                    Span::styled(feedback.date.clone(), Style::default().fg(Color::DarkGray)),
                 ])));
 
                 // Subject and teacher
                 items.push(ListItem::new(Line::from(vec![
                     Span::raw("     "),
-                    Span::styled(&feedback.subject, Style::default().fg(Color::Cyan)),
+                    Span::styled(feedback.subject.clone(), Style::default().fg(Color::Cyan)),
                     Span::raw(" - "),
-                    Span::styled(&feedback.teacher, Style::default().fg(Color::DarkGray)),
+                    Span::styled(feedback.teacher.clone(), Style::default().fg(Color::DarkGray)),
                 ])));
 
                 // Comment if present
@@ -994,12 +997,6 @@ fn draw_feedbacks(frame: &mut Frame, app: &App, area: Rect) {
                         ])));
                     }
                 }
-
-                // Date
-                items.push(ListItem::new(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(&feedback.date, Style::default().fg(Color::DarkGray)),
-                ])));
 
                 items.push(ListItem::new(""));
             }

@@ -64,26 +64,26 @@ impl MessageThread {
     /// Format the update time for display (extract date or time)
     pub fn display_time(&self) -> String {
         // Format: "2026-02-18 09:47:18" -> extract relevant part
-        if self.updated_at.len() >= 16 {
-            // Return "DD.MM HH:MM" format
-            let parts: Vec<&str> = self.updated_at.split(' ').collect();
-            if parts.len() >= 2 {
-                let date_parts: Vec<&str> = parts[0].split('-').collect();
-                if date_parts.len() == 3 {
-                    let time = if parts[1].len() >= 5 { &parts[1][..5] } else { parts[1] };
-                    return format!("{}.{} {}", date_parts[2], date_parts[1], time);
-                }
+        let parts: Vec<&str> = self.updated_at.split(' ').collect();
+        if parts.len() >= 2 {
+            let date_parts: Vec<&str> = parts[0].split('-').collect();
+            if date_parts.len() == 3 {
+                // Safely extract time (first 5 chars)
+                let time: String = parts[1].chars().take(5).collect();
+                return format!("{}.{} {}", date_parts[2], date_parts[1], time);
             }
         }
         self.updated_at.clone()
     }
 
-    /// Truncate the last message for preview
+    /// Truncate the last message for preview (UTF-8 safe)
     pub fn preview(&self, max_len: usize) -> String {
-        if self.last_message.len() <= max_len {
+        let char_count = self.last_message.chars().count();
+        if char_count <= max_len {
             self.last_message.clone()
         } else {
-            format!("{}...", &self.last_message[..max_len.saturating_sub(3)])
+            let truncated: String = self.last_message.chars().take(max_len.saturating_sub(3)).collect();
+            format!("{}...", truncated)
         }
     }
 }
