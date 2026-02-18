@@ -62,11 +62,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         }
 
         // Left/Right change tabs
-        KeyCode::Left | KeyCode::Char('h') => {
+        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('{') => {
             app.prev_tab();
             Action::None
         }
-        KeyCode::Right | KeyCode::Char('l') => {
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('}') => {
             app.next_tab();
             Action::None
         }
