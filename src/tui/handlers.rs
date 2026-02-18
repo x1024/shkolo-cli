@@ -113,12 +113,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('R') => Action::RefreshAll,
 
         // Resize students pane
-        KeyCode::Char('[') => {
+        KeyCode::Char('[') | KeyCode::Char('-') => {
             app.resize_students_pane(-2);
+            app.set_status(format!("Pane width: {}", app.students_pane_width));
             Action::None
         }
-        KeyCode::Char(']') => {
+        KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::Char('=') => {
             app.resize_students_pane(2);
+            app.set_status(format!("Pane width: {}", app.students_pane_width));
             Action::None
         }
 
