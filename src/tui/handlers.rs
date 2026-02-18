@@ -7,6 +7,7 @@ pub enum Action {
     None,
     Refresh,
     RefreshAll,
+    RefreshSchedule, // Refresh schedule for current schedule_date
     Logout,
     LoginPassword,
     LoginGoogle,
@@ -129,6 +130,29 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             // On Notifications tab, navigate to related tab
             if app.current_tab == Tab::Notifications {
                 app.activate_notification();
+            }
+            Action::None
+        }
+
+        // Schedule date navigation (only on Schedule tab)
+        KeyCode::Char('n') => {
+            if app.current_tab == Tab::Schedule {
+                app.schedule_next_day();
+                return Action::RefreshSchedule;
+            }
+            Action::None
+        }
+        KeyCode::Char('p') => {
+            if app.current_tab == Tab::Schedule {
+                app.schedule_prev_day();
+                return Action::RefreshSchedule;
+            }
+            Action::None
+        }
+        KeyCode::Char('t') => {
+            if app.current_tab == Tab::Schedule {
+                app.schedule_today();
+                return Action::RefreshSchedule;
             }
             Action::None
         }

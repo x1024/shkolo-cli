@@ -649,6 +649,7 @@ fn draw_schedule(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
     let current_time = app.current_time;
     let current_minutes = current_time.0 as i32 * 60 + current_time.1 as i32;
+    let is_today = app.is_schedule_today();
 
     let content = if let Some(data) = app.current_student() {
         if data.schedule.is_empty() {
@@ -662,8 +663,9 @@ fn draw_schedule(frame: &mut Frame, app: &App, area: Rect) {
                     let from_mins = from_h * 60 + from_m;
                     let to_mins = to_h * 60 + to_m;
 
-                    let is_past = to_mins < current_minutes;
-                    let is_current = from_mins <= current_minutes && current_minutes < to_mins;
+                    // Only highlight current/past when viewing today
+                    let is_past = is_today && to_mins < current_minutes;
+                    let is_current = is_today && from_mins <= current_minutes && current_minutes < to_mins;
 
                     let time = format!("{}-{}", hour.from_time, hour.to_time);
 
@@ -725,8 +727,32 @@ fn draw_schedule(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|d| d.schedule_age.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let time_str = format!("{:02}:{:02}", current_time.0, current_time.1);
-    let title = format!(" {} {} ({}) [{}] ", T::schedule(lang), app.current_date, age, time_str);
+    // Format date for display (YYYY-MM-DD -> DD.MM.YYYY)
+    let display_date = {
+        let parts: Vec<&str> = app.schedule_date.split('-').collect();
+        if parts.len() == 3 {
+            format!("{}.{}.{}", parts[2], parts[1], parts[0])
+        } else {
+            app.schedule_date.clone()
+        }
+    };
+
+    let today_marker = if is_today {
+        match lang { crate::i18n::Lang::Bg => " (днес)", crate::i18n::Lang::En => " (today)" }
+    } else { "" };
+
+    let time_str = if is_today {
+        format!(" [{:02}:{:02}]", current_time.0, current_time.1)
+    } else {
+        String::new()
+    };
+
+    let nav_hint = match lang {
+        crate::i18n::Lang::Bg => " [p/n]-ден [t]-днес",
+        crate::i18n::Lang::En => " [p/n]-day [t]-today",
+    };
+
+    let title = format!(" {} {}{} ({}){}{}  ", T::schedule(lang), display_date, today_marker, age, time_str, nav_hint);
 
     let is_focused = app.focus == Focus::Content;
     let border_style = if is_focused {
@@ -817,10 +843,10 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
             ))));
             items.push(ListItem::new(""));
 
-            // Detailed list grouped by date
+            // Detailed list grouped by date (scrollable)
             let mut current_date = String::new();
 
-            for absence in &data.absences {
+            for absence in data.absences.iter().skip(app.list_offset) {
                 // Add date header if new date
                 if absence.date != current_date {
                     if !current_date.is_empty() {

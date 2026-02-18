@@ -421,6 +421,18 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                             app.set_status(format!("Error: {}", e));
                         }
                     }
+                    Action::RefreshSchedule => {
+                        // Refresh schedule for the current schedule_date
+                        app.loading = true;
+                        app.set_status(format!("Loading schedule for {}...", app.schedule_date));
+                        terminal.draw(|f| draw(f, &app))?;
+
+                        if let Err(e) = app.refresh_schedule(&client, cache).await {
+                            app.set_status(format!("Error: {}", e));
+                        } else {
+                            app.set_status(format!("Schedule: {}", app.schedule_date));
+                        }
+                    }
                     Action::Logout => {
                         // Clear token and exit
                         if let Err(e) = cache.clear_token() {

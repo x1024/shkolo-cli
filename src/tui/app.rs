@@ -170,6 +170,7 @@ pub struct App {
     pub loading: bool,
     pub last_refresh: Option<String>,
     pub current_date: String,
+    pub schedule_date: String, // Date being viewed in schedule (can differ from current_date)
     pub current_time: (u8, u8), // (hour, minute)
     pub tick: usize, // Frame counter for animations
     pub students_pane_width: u16, // Resizable pane width
@@ -199,11 +200,38 @@ impl App {
             status_message: None,
             loading: false,
             last_refresh: None,
-            current_date: today,
+            current_date: today.clone(),
+            schedule_date: today,
             current_time: (now.hour(), now.minute()),
             tick: 0,
             students_pane_width: 30,
         }
+    }
+
+    /// Move schedule to next day
+    pub fn schedule_next_day(&mut self) {
+        if let Ok(date) = time::Date::parse(&self.schedule_date, time::macros::format_description!("[year]-[month]-[day]")) {
+            let next = date + time::Duration::days(1);
+            self.schedule_date = format!("{:04}-{:02}-{:02}", next.year(), next.month() as u8, next.day());
+        }
+    }
+
+    /// Move schedule to previous day
+    pub fn schedule_prev_day(&mut self) {
+        if let Ok(date) = time::Date::parse(&self.schedule_date, time::macros::format_description!("[year]-[month]-[day]")) {
+            let prev = date - time::Duration::days(1);
+            self.schedule_date = format!("{:04}-{:02}-{:02}", prev.year(), prev.month() as u8, prev.day());
+        }
+    }
+
+    /// Reset schedule to today
+    pub fn schedule_today(&mut self) {
+        self.schedule_date = self.current_date.clone();
+    }
+
+    /// Check if schedule is showing today
+    pub fn is_schedule_today(&self) -> bool {
+        self.schedule_date == self.current_date
     }
 
     pub fn resize_students_pane(&mut self, delta: i16) {
@@ -557,6 +585,32 @@ impl App {
         self.loading = false;
         self.clear_status();
 
+        Ok(())
+    }
+
+    /// Refresh only the schedule for the current schedule_date
+    pub async fn refresh_schedule(&mut self, client: &ShkoloClient, cache: &CacheStore) -> anyhow::Result<()> {
+        // Update schedule for the currently selected student
+        if let Some(student_idx) = self.students.get(self.selected_student).map(|s| s.student.id) {
+            // Try cache first
+            if let Some((schedule, age, _)) = cache.get_schedule(student_idx, &self.schedule_date) {
+                if let Some(data) = self.students.get_mut(self.selected_student) {
+                    data.schedule = schedule;
+                    data.schedule_age = Some(age);
+                }
+            } else {
+                // Fetch from API
+                if let Ok(schedule) = self.fetch_schedule(client, student_idx, &self.schedule_date).await {
+                    let _ = cache.save_schedule(student_idx, &self.schedule_date, &schedule);
+                    if let Some(data) = self.students.get_mut(self.selected_student) {
+                        data.schedule = schedule;
+                        data.schedule_age = Some("just now".to_string());
+                    }
+                }
+            }
+        }
+
+        self.loading = false;
         Ok(())
     }
 
