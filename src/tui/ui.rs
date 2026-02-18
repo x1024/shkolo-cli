@@ -1,12 +1,14 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Tabs},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs},
     Frame,
 };
 
 use super::app::{App, Focus, Tab};
+
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -21,6 +23,43 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_tabs(frame, app, chunks[0]);
     draw_content(frame, app, chunks[1]);
     draw_status_bar(frame, app, chunks[2]);
+
+    // Draw loading overlay if loading
+    if app.loading {
+        draw_loading_overlay(frame, app);
+    }
+}
+
+fn draw_loading_overlay(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    // Calculate center position for the loading box
+    let width = 30u16;
+    let height = 5u16;
+    let x = area.width.saturating_sub(width) / 2;
+    let y = area.height.saturating_sub(height) / 2;
+
+    let loading_area = Rect::new(x, y, width, height);
+
+    // Get spinner frame based on tick counter
+    let spinner_idx = app.tick % SPINNER_FRAMES.len();
+    let spinner = SPINNER_FRAMES[spinner_idx];
+
+    let message = app.status_message.as_deref().unwrap_or("Loading...");
+    let text = format!("{} {}", spinner, message);
+
+    let loading_text = Paragraph::new(text)
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(" Loading ")
+            .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+
+    // Clear the area first, then render the loading box
+    frame.render_widget(Clear, loading_area);
+    frame.render_widget(loading_text, loading_area);
 }
 
 fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {

@@ -142,6 +142,7 @@ pub struct App {
     pub last_refresh: Option<String>,
     pub current_date: String,
     pub current_time: (u8, u8), // (hour, minute)
+    pub tick: usize, // Frame counter for animations
 }
 
 impl App {
@@ -165,7 +166,12 @@ impl App {
             last_refresh: None,
             current_date: today,
             current_time: (now.hour(), now.minute()),
+            tick: 0,
         }
+    }
+
+    pub fn tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
     }
 
     pub fn update_time(&mut self) {

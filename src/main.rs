@@ -293,6 +293,11 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
     // If no cached data, refresh
     if app.students.is_empty() {
+        // Show loading state
+        app.loading = true;
+        app.set_status("Loading data...");
+        terminal.draw(|f| draw(f, &app))?;
+
         if let Err(e) = app.refresh_data(&client, cache, false).await {
             app.set_status(format!("Error: {}", e));
         }
@@ -300,8 +305,9 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
     // Main loop
     loop {
-        // Update time for schedule highlighting
+        // Update time for schedule highlighting and tick for animations
         app.update_time();
+        app.tick();
 
         terminal.draw(|f| draw(f, &app))?;
 
@@ -309,11 +315,21 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
             if let Event::Key(key) = event::read()? {
                 match handle_key(&mut app, key) {
                     Action::Refresh => {
+                        // Show loading state before starting refresh
+                        app.loading = true;
+                        app.set_status("Refreshing...");
+                        terminal.draw(|f| draw(f, &app))?;
+
                         if let Err(e) = app.refresh_data(&client, cache, false).await {
                             app.set_status(format!("Error: {}", e));
                         }
                     }
                     Action::RefreshAll => {
+                        // Show loading state before starting refresh
+                        app.loading = true;
+                        app.set_status("Refreshing all...");
+                        terminal.draw(|f| draw(f, &app))?;
+
                         if let Err(e) = app.refresh_data(&client, cache, true).await {
                             app.set_status(format!("Error: {}", e));
                         }
