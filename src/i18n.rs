@@ -105,9 +105,6 @@ impl T {
     pub fn loading(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Зареждане...", Lang::En => "Loading..." }
     }
-    pub fn refreshing(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Обновяване...", Lang::En => "Refreshing..." }
-    }
     pub fn no_homework(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Няма домашни", Lang::En => "No homework found" }
     }
@@ -125,11 +122,8 @@ impl T {
     }
 
     // Labels
-    pub fn due(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "До", Lang::En => "Due" }
-    }
     pub fn past_due(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Изтекъл срок", Lang::En => "Past due" }
+        match lang { Lang::Bg => "Минал", Lang::En => "Past" }
     }
     pub fn term1(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Срок 1", Lang::En => "Term 1" }
@@ -151,9 +145,6 @@ impl T {
     }
     pub fn unread(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "непрочетени", Lang::En => "unread" }
-    }
-    pub fn all_students(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Всички ученици", Lang::En => "All Students" }
     }
     pub fn new_marker(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "[НОВО] ", Lang::En => "[NEW] " }
@@ -201,4 +192,5 @@ impl T {
             Lang::En => "Import token from the Shkolo iOS app on this Mac"
         }
     }
+
 }
