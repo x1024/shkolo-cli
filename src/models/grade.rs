@@ -12,14 +12,6 @@ pub struct Grade {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum GradeValue {
-    Simple(String),
-    Numeric(f64),
-    Detailed(GradeDetail),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradeDetail {
     pub grade: Option<String>,
     pub grade_raw: Option<String>,
