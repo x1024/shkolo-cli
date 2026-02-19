@@ -4,6 +4,23 @@ use crate::i18n::{Lang, T};
 use crate::models::*;
 use time::OffsetDateTime;
 
+/// Input mode for text entry (reply/compose)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    Reply,           // Replying to a thread
+    ComposeSubject,  // Composing - entering subject
+    ComposeBody,     // Composing - entering body
+}
+
+/// Message view state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageView {
+    List,    // Viewing message list
+    Thread,  // Viewing a specific thread
+    Compose, // Composing a new message
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Overview,
@@ -109,21 +126,6 @@ impl StudentData {
         }
     }
 
-    /// Get recent homework (last 2-3 days)
-    pub fn recent_homework(&self) -> Vec<&Homework> {
-        let now = OffsetDateTime::now_utc();
-        let today = format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
-
-        self.homework.iter()
-            .filter(|hw| {
-                hw.date_sort.as_ref()
-                    .map(|d| d >= &today[..8].to_string() || d.starts_with(&today[..7]))
-                    .unwrap_or(true)
-            })
-            .take(10)
-            .collect()
-    }
-
     /// Count total grades across all subjects
     pub fn total_grades_count(&self) -> usize {
         self.grades.iter()
@@ -167,6 +169,7 @@ pub struct App {
     pub messages: Vec<MessageThread>,
     pub messages_age: Option<String>,
     pub status_message: Option<String>,
+    pub error_message: Option<String>,  // Persistent error message
     pub loading: bool,
     pub last_refresh: Option<String>,
     pub current_date: String,
@@ -174,6 +177,20 @@ pub struct App {
     pub current_time: (u8, u8), // (hour, minute)
     pub tick: usize, // Frame counter for animations
     pub students_pane_width: u16, // Resizable pane width
+    pub overview_split_percent: u16, // Vertical split for overview (schedule vs homework/grades)
+    // Message thread state
+    pub message_view: MessageView,
+    pub selected_thread_id: Option<i64>,
+    pub thread_messages: Vec<Message>,
+    pub thread_offset: usize,
+    // Input mode for text entry
+    pub input_mode: InputMode,
+    pub input_buffer: String,
+    pub input_cursor: usize,
+    // Recipients for composing
+    pub recipients: Vec<Recipient>,
+    pub selected_recipients: Vec<i64>,
+    pub compose_subject: String,
 }
 
 impl App {
@@ -198,6 +215,7 @@ impl App {
             messages: Vec::new(),
             messages_age: None,
             status_message: None,
+            error_message: None,
             loading: false,
             last_refresh: None,
             current_date: today.clone(),
@@ -205,6 +223,20 @@ impl App {
             current_time: (now.hour(), now.minute()),
             tick: 0,
             students_pane_width: 30,
+            overview_split_percent: 40, // 40% for schedule, 60% for homework/grades
+            // Message thread state
+            message_view: MessageView::List,
+            selected_thread_id: None,
+            thread_messages: Vec::new(),
+            thread_offset: 0,
+            // Input mode
+            input_mode: InputMode::Normal,
+            input_buffer: String::new(),
+            input_cursor: 0,
+            // Compose state
+            recipients: Vec::new(),
+            selected_recipients: Vec::new(),
+            compose_subject: String::new(),
         }
     }
 
@@ -239,6 +271,11 @@ impl App {
         self.students_pane_width = new_width;
     }
 
+    pub fn resize_overview_split(&mut self, delta: i16) {
+        let new_percent = (self.overview_split_percent as i16 + delta).clamp(20, 70) as u16;
+        self.overview_split_percent = new_percent;
+    }
+
     pub fn tick(&mut self) {
         self.tick = self.tick.wrapping_add(1);
     }
@@ -261,6 +298,78 @@ impl App {
     pub fn prev_tab(&mut self) {
         self.current_tab = self.current_tab.prev();
         self.list_offset = 0;
+    }
+
+    /// Set the current tab directly (for mouse click)
+    pub fn set_tab(&mut self, tab: Tab) {
+        self.current_tab = tab;
+        self.list_offset = 0;
+    }
+
+    /// Handle click on tab bar - returns true if a tab was clicked
+    pub fn click_tab(&mut self, column: u16) -> bool {
+        // Tab bar layout: " TabName " with borders
+        // Approximate tab widths based on names (EN/BG)
+        let tabs = Tab::all();
+        let mut x = 1; // Start after left border
+
+        for tab in tabs {
+            let tab_width = tab.name(self.lang).chars().count() as u16 + 2; // +2 for padding
+
+            if column >= x && column < x + tab_width {
+                self.set_tab(*tab);
+                return true;
+            }
+
+            x += tab_width + 1; // +1 for separator
+        }
+
+        false
+    }
+
+    /// Handle click on list item - selects and activates item based on row position
+    /// Returns ClickResult indicating what action should be taken
+    pub fn click_list_item(&mut self, row: u16, header_offset: u16, column: u16, students_width: u16) -> ClickResult {
+        // row is absolute, we need to convert to list index
+        // header_offset is the number of rows taken by the header (tab bar + borders)
+        if row < header_offset {
+            return ClickResult::None;
+        }
+
+        let relative_row = (row - header_offset) as usize;
+
+        // Check if click is in students pane (left side)
+        if column < students_width {
+            // Clicking on a student selects them
+            if relative_row < self.students.len() {
+                self.selected_student = relative_row;
+                self.list_offset = 0;
+                return ClickResult::StudentSelected;
+            }
+            return ClickResult::None;
+        }
+
+        // Click is in content pane
+        let new_offset = self.list_offset + relative_row;
+
+        // Check bounds
+        if new_offset < self.current_list_length() {
+            self.list_offset = new_offset;
+            // Return activation result based on current tab
+            return match self.current_tab {
+                Tab::Notifications => ClickResult::ActivateNotification,
+                Tab::Messages => {
+                    if self.message_view == MessageView::List {
+                        ClickResult::ActivateMessage
+                    } else {
+                        ClickResult::None
+                    }
+                }
+                _ => ClickResult::ItemSelected,
+            };
+        }
+
+        ClickResult::None
     }
 
     pub fn toggle_focus(&mut self) {
@@ -311,12 +420,56 @@ impl App {
         }
     }
 
+    /// Get the number of items in the current list (for scroll bounds)
+    pub fn current_list_length(&self) -> usize {
+        match self.current_tab {
+            Tab::Notifications => self.notifications.len(),
+            Tab::Messages => self.messages.len(),
+            Tab::Homework => self.current_student().map(|s| s.homework.len()).unwrap_or(0),
+            Tab::Grades => self.current_student().map(|s| s.grades.len()).unwrap_or(0),
+            Tab::Schedule => self.current_student().map(|s| s.schedule.len()).unwrap_or(0),
+            Tab::Absences => self.current_student().map(|s| s.absences.len()).unwrap_or(0),
+            Tab::Feedbacks => self.current_student().map(|s| s.feedbacks.len()).unwrap_or(0),
+            Tab::Overview | Tab::Settings => 0,
+        }
+    }
+
+    /// Get the number of items in the current overview sub-pane (for scroll bounds)
+    fn overview_list_length(&self) -> usize {
+        match self.focus {
+            Focus::OverviewSchedule => self.current_student().map(|s| s.schedule.len()).unwrap_or(0),
+            Focus::OverviewHomework => self.current_student().map(|s| s.homework.len().min(5)).unwrap_or(0),
+            Focus::OverviewGrades => self.current_student().map(|s| s.grades.len().min(5)).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
     pub fn scroll_down(&mut self) {
         match self.focus {
-            Focus::OverviewSchedule => self.schedule_offset = self.schedule_offset.saturating_add(1),
-            Focus::OverviewHomework => self.homework_offset = self.homework_offset.saturating_add(1),
-            Focus::OverviewGrades => self.grades_offset = self.grades_offset.saturating_add(1),
-            _ => self.list_offset = self.list_offset.saturating_add(1),
+            Focus::OverviewSchedule => {
+                let max = self.overview_list_length().saturating_sub(1);
+                if self.schedule_offset < max {
+                    self.schedule_offset = self.schedule_offset.saturating_add(1);
+                }
+            }
+            Focus::OverviewHomework => {
+                let max = self.overview_list_length().saturating_sub(1);
+                if self.homework_offset < max {
+                    self.homework_offset = self.homework_offset.saturating_add(1);
+                }
+            }
+            Focus::OverviewGrades => {
+                let max = self.overview_list_length().saturating_sub(1);
+                if self.grades_offset < max {
+                    self.grades_offset = self.grades_offset.saturating_add(1);
+                }
+            }
+            _ => {
+                let max = self.current_list_length().saturating_sub(1);
+                if self.list_offset < max {
+                    self.list_offset = self.list_offset.saturating_add(1);
+                }
+            }
         }
     }
 
@@ -327,6 +480,144 @@ impl App {
             Focus::OverviewGrades => self.grades_offset = self.grades_offset.saturating_sub(1),
             _ => self.list_offset = self.list_offset.saturating_sub(1),
         }
+    }
+
+    /// Open the selected message thread
+    pub fn open_thread(&mut self) -> Option<i64> {
+        if self.current_tab != Tab::Messages || self.message_view != MessageView::List {
+            return None;
+        }
+
+        if let Some(thread) = self.messages.get(self.list_offset) {
+            let thread_id = thread.id;
+            self.selected_thread_id = Some(thread_id);
+            self.message_view = MessageView::Thread;
+            self.thread_offset = 0;
+            return Some(thread_id);
+        }
+        None
+    }
+
+    /// Close thread view and return to list
+    pub fn close_thread(&mut self) {
+        self.message_view = MessageView::List;
+        self.selected_thread_id = None;
+        self.thread_messages.clear();
+        self.thread_offset = 0;
+        self.input_mode = InputMode::Normal;
+        self.input_buffer.clear();
+    }
+
+    /// Start reply mode
+    pub fn start_reply(&mut self) {
+        if self.message_view == MessageView::Thread {
+            self.input_mode = InputMode::Reply;
+            self.input_buffer.clear();
+            self.input_cursor = 0;
+        }
+    }
+
+    /// Cancel input mode
+    pub fn cancel_input(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.input_buffer.clear();
+        self.input_cursor = 0;
+    }
+
+    /// Add character to input buffer
+    pub fn input_char(&mut self, c: char) {
+        self.input_buffer.insert(self.input_cursor, c);
+        self.input_cursor += 1;
+    }
+
+    /// Delete character before cursor
+    pub fn input_backspace(&mut self) {
+        if self.input_cursor > 0 {
+            self.input_cursor -= 1;
+            self.input_buffer.remove(self.input_cursor);
+        }
+    }
+
+    /// Delete character at cursor
+    pub fn input_delete(&mut self) {
+        if self.input_cursor < self.input_buffer.len() {
+            self.input_buffer.remove(self.input_cursor);
+        }
+    }
+
+    /// Move input cursor left
+    pub fn input_left(&mut self) {
+        if self.input_cursor > 0 {
+            self.input_cursor -= 1;
+        }
+    }
+
+    /// Move input cursor right
+    pub fn input_right(&mut self) {
+        if self.input_cursor < self.input_buffer.len() {
+            self.input_cursor += 1;
+        }
+    }
+
+    /// Get current input and clear buffer
+    pub fn take_input(&mut self) -> String {
+        let input = self.input_buffer.clone();
+        self.input_buffer.clear();
+        self.input_cursor = 0;
+        self.input_mode = InputMode::Normal;
+        input
+    }
+
+    /// Start compose mode
+    pub fn start_compose(&mut self) {
+        self.message_view = MessageView::Compose;
+        self.input_mode = InputMode::ComposeSubject;
+        self.compose_subject.clear();
+        self.input_buffer.clear();
+        self.input_cursor = 0;
+        self.selected_recipients.clear();
+    }
+
+    /// Cancel compose and return to message list
+    pub fn cancel_compose(&mut self) {
+        self.message_view = MessageView::List;
+        self.input_mode = InputMode::Normal;
+        self.compose_subject.clear();
+        self.input_buffer.clear();
+        self.input_cursor = 0;
+        self.selected_recipients.clear();
+    }
+
+    /// Move to next compose step (subject -> body)
+    pub fn compose_next_step(&mut self) {
+        match self.input_mode {
+            InputMode::ComposeSubject => {
+                self.compose_subject = self.input_buffer.clone();
+                self.input_buffer.clear();
+                self.input_cursor = 0;
+                self.input_mode = InputMode::ComposeBody;
+            }
+            _ => {}
+        }
+    }
+
+    /// Toggle recipient selection
+    pub fn toggle_recipient(&mut self, index: usize) {
+        if let Some(recipient) = self.recipients.get(index) {
+            let id = recipient.id;
+            if self.selected_recipients.contains(&id) {
+                self.selected_recipients.retain(|&r| r != id);
+            } else {
+                self.selected_recipients.push(id);
+            }
+        }
+    }
+
+    /// Check if ready to send compose (has subject, body, and at least one recipient)
+    pub fn can_send_compose(&self) -> bool {
+        !self.compose_subject.is_empty()
+            && !self.input_buffer.is_empty()
+            && !self.selected_recipients.is_empty()
     }
 
     /// Activate the selected notification - navigate to the appropriate tab
@@ -368,6 +659,14 @@ impl App {
 
     pub fn clear_status(&mut self) {
         self.status_message = None;
+    }
+
+    pub fn set_error(&mut self, message: impl Into<String>) {
+        self.error_message = Some(message.into());
+    }
+
+    pub fn clear_error(&mut self) {
+        self.error_message = None;
     }
 
     pub async fn load_from_cache(&mut self, cache: &CacheStore) {
@@ -588,32 +887,6 @@ impl App {
         Ok(())
     }
 
-    /// Refresh only the schedule for the current schedule_date
-    pub async fn refresh_schedule(&mut self, client: &ShkoloClient, cache: &CacheStore) -> anyhow::Result<()> {
-        // Update schedule for the currently selected student
-        if let Some(student_idx) = self.students.get(self.selected_student).map(|s| s.student.id) {
-            // Try cache first
-            if let Some((schedule, age, _)) = cache.get_schedule(student_idx, &self.schedule_date) {
-                if let Some(data) = self.students.get_mut(self.selected_student) {
-                    data.schedule = schedule;
-                    data.schedule_age = Some(age);
-                }
-            } else {
-                // Fetch from API
-                if let Ok(schedule) = self.fetch_schedule(client, student_idx, &self.schedule_date).await {
-                    let _ = cache.save_schedule(student_idx, &self.schedule_date, &schedule);
-                    if let Some(data) = self.students.get_mut(self.selected_student) {
-                        data.schedule = schedule;
-                        data.schedule_age = Some("just now".to_string());
-                    }
-                }
-            }
-        }
-
-        self.loading = false;
-        Ok(())
-    }
-
     async fn fetch_homework(&self, client: &ShkoloClient, student_id: i64) -> anyhow::Result<Vec<Homework>> {
         let courses_response = client.get_homework_courses(student_id).await?;
 
@@ -729,7 +1002,7 @@ impl App {
         Ok(feedbacks)
     }
 
-    async fn fetch_messages(&self, client: &ShkoloClient) -> anyhow::Result<Vec<MessageThread>> {
+    pub async fn fetch_messages(&self, client: &ShkoloClient) -> anyhow::Result<Vec<MessageThread>> {
         let raw_threads = client.get_messenger_threads(None).await?;
 
         let messages: Vec<MessageThread> = raw_threads.iter()
@@ -744,4 +1017,14 @@ impl Default for App {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Result of clicking on a list item
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickResult {
+    None,
+    StudentSelected,
+    ItemSelected,
+    ActivateNotification,
+    ActivateMessage,
 }
