@@ -191,6 +191,8 @@ pub struct App {
     pub recipients: Vec<Recipient>,
     pub selected_recipients: Vec<i64>,
     pub compose_subject: String,
+    // Help overlay
+    pub show_help: bool,
 }
 
 impl App {
@@ -237,6 +239,8 @@ impl App {
             recipients: Vec::new(),
             selected_recipients: Vec::new(),
             compose_subject: String::new(),
+            // Help
+            show_help: false,
         }
     }
 
@@ -1010,6 +1014,91 @@ impl App {
             .collect();
 
         Ok(messages)
+    }
+
+    /// Toggle the help overlay
+    pub fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+    }
+
+    /// Get context-aware keybindings for the current app state
+    /// Returns a list of (key, description) pairs
+    pub fn get_keybindings(&self) -> Vec<(&'static str, &'static str)> {
+        let mut bindings = Vec::new();
+
+        // Always available
+        bindings.push(("?", "Show/hide this help"));
+        bindings.push(("Ctrl+C", "Quit immediately"));
+
+        // Check for special modes first
+        if self.input_mode != InputMode::Normal {
+            // Input mode keybindings
+            bindings.push(("Esc", "Cancel input"));
+            bindings.push(("Enter", "Submit/next field"));
+            bindings.push(("Backspace", "Delete character"));
+            bindings.push(("←/→", "Move cursor"));
+            bindings.push(("Home/End", "Jump to start/end"));
+            if self.input_mode == InputMode::ComposeSubject {
+                bindings.push(("Tab", "Move to message body"));
+            }
+            return bindings;
+        }
+
+        // Message thread view
+        if self.current_tab == Tab::Messages && self.message_view == MessageView::Thread {
+            bindings.push(("Esc / q", "Close thread"));
+            bindings.push(("r", "Reply to thread"));
+            bindings.push(("↓/j, ↑/k", "Scroll messages"));
+            return bindings;
+        }
+
+        // Compose view (recipient selection)
+        if self.current_tab == Tab::Messages && self.message_view == MessageView::Compose {
+            bindings.push(("Esc", "Cancel compose"));
+            bindings.push(("↓/j, ↑/k", "Navigate recipients"));
+            bindings.push(("Enter / Space", "Toggle recipient"));
+            bindings.push(("s", "Start writing subject"));
+            return bindings;
+        }
+
+        // Normal mode - common bindings
+        bindings.push(("q / Esc", "Quit"));
+        bindings.push(("←/h/{, →/l/}", "Switch tabs"));
+        bindings.push(("Tab", "Toggle focus (students/content)"));
+        bindings.push(("↓/j, ↑/k", "Navigate list / Scroll"));
+        bindings.push(("1-5", "Quick select student"));
+        bindings.push(("r", "Refresh data"));
+        bindings.push(("R", "Force refresh all"));
+        bindings.push(("G", "Toggle language (BG/EN)"));
+        bindings.push(("[-/[, +/]/=", "Resize students pane"));
+
+        // Tab-specific bindings
+        match self.current_tab {
+            Tab::Overview => {
+                bindings.push(("</>", "Resize overview split"));
+            }
+            Tab::Schedule => {
+                bindings.push(("p", "Previous day"));
+                bindings.push(("n", "Next day"));
+                bindings.push(("t", "Go to today"));
+            }
+            Tab::Notifications => {
+                bindings.push(("Enter", "Go to related tab"));
+            }
+            Tab::Messages => {
+                bindings.push(("Enter", "Open thread"));
+                bindings.push(("c", "Compose new message"));
+            }
+            Tab::Settings => {
+                bindings.push(("L", "Logout"));
+                bindings.push(("1", "Login with password"));
+                bindings.push(("2", "Login with Google"));
+                bindings.push(("3", "Import token from iOS"));
+            }
+            _ => {}
+        }
+
+        bindings
     }
 }
 

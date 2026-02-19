@@ -27,6 +27,18 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::None;
     }
 
+    // Handle ? for help (always works, toggles help overlay)
+    if key.code == KeyCode::Char('?') {
+        app.toggle_help();
+        return Action::None;
+    }
+
+    // Any key dismisses help overlay if shown
+    if app.show_help {
+        app.show_help = false;
+        return Action::None;
+    }
+
     // Dismiss error on any key
     if app.error_message.is_some() {
         app.clear_error();

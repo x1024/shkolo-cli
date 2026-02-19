@@ -29,6 +29,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(ref error) = app.error_message {
         draw_error_overlay(frame, error);
     }
+
+    // Draw help overlay if requested
+    if app.show_help {
+        draw_help_overlay(frame, app);
+    }
 }
 
 fn draw_error_overlay(frame: &mut Frame, error: &str) {
@@ -63,6 +68,85 @@ fn draw_error_overlay(frame: &mut Frame, error: &str) {
 
     frame.render_widget(Clear, error_area);
     frame.render_widget(error_text, error_area);
+}
+
+fn draw_help_overlay(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let bindings = app.get_keybindings();
+
+    // Calculate dimensions
+    let max_key_len = bindings.iter().map(|(k, _)| k.len()).max().unwrap_or(10);
+    let max_desc_len = bindings.iter().map(|(_, d)| d.len()).max().unwrap_or(20);
+    let content_width = max_key_len + max_desc_len + 5; // key + " : " + desc + padding
+    let width = (content_width as u16 + 4).min(area.width - 4).max(40);
+    let height = (bindings.len() as u16 + 4).min(area.height - 4);
+
+    let x = area.width.saturating_sub(width) / 2;
+    let y = area.height.saturating_sub(height) / 2;
+
+    let help_area = Rect::new(x, y, width, height);
+
+    // Build help text with aligned columns
+    let lines: Vec<Line> = bindings
+        .iter()
+        .map(|(key, desc)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{:>width$}", key, width = max_key_len),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" : "),
+                Span::styled(*desc, Style::default().fg(Color::White)),
+            ])
+        })
+        .collect();
+
+    // Get context description
+    let context = get_context_description(app);
+    let title = format!(" Keyboard Shortcuts ({}) [Press any key] ", context);
+
+    let help_text = Paragraph::new(lines)
+        .alignment(Alignment::Left)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(title)
+            .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+
+    frame.render_widget(Clear, help_area);
+    frame.render_widget(help_text, help_area);
+}
+
+/// Get a description of the current context for the help title
+fn get_context_description(app: &App) -> &'static str {
+    if app.input_mode != InputMode::Normal {
+        return match app.input_mode {
+            InputMode::Reply => "Replying",
+            InputMode::ComposeSubject => "Composing Subject",
+            InputMode::ComposeBody => "Composing Message",
+            InputMode::Normal => "Normal",
+        };
+    }
+
+    if app.current_tab == Tab::Messages {
+        return match app.message_view {
+            MessageView::Thread => "Thread View",
+            MessageView::Compose => "Select Recipients",
+            MessageView::List => "Messages",
+        };
+    }
+
+    match app.current_tab {
+        Tab::Overview => "Overview",
+        Tab::Schedule => "Schedule",
+        Tab::Homework => "Homework",
+        Tab::Grades => "Grades",
+        Tab::Absences => "Absences",
+        Tab::Feedbacks => "Feedbacks",
+        Tab::Notifications => "Notifications",
+        Tab::Messages => "Messages",
+        Tab::Settings => "Settings",
+    }
 }
 
 fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
