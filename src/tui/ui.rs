@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::i18n::T;
 use super::app::{App, Focus, Tab, InputMode, MessageView};
+use super::handlers::get_keybindings;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -72,7 +73,7 @@ fn draw_error_overlay(frame: &mut Frame, error: &str) {
 
 fn draw_help_overlay(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let bindings = app.get_keybindings();
+    let bindings = get_keybindings(app);
 
     // Calculate dimensions
     let max_key_len = bindings.iter().map(|(k, _)| k.len()).max().unwrap_or(10);

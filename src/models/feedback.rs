@@ -98,3 +98,125 @@ impl Feedback {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_feedback_positive_badge_type() {
+        let raw = FeedbackRaw {
+            id: Some(1),
+            badge_name: Some("Excellent work".to_string()),
+            badge_icon: Some("excellence.png".to_string()),
+            badge_type_id: Some(1), // 1 = positive
+            text: Some("Great job!".to_string()),
+            created_date: Some("19.02.2026".to_string()),
+            created_by: Some("Teacher Name".to_string()),
+            course_name: Some("Mathematics".to_string()),
+            course_short_name: Some("Math".to_string()),
+        };
+
+        let feedback = Feedback::from_raw(&raw);
+
+        assert!(feedback.is_positive);
+        assert_eq!(feedback.badge_name, "Excellent work");
+        assert_eq!(feedback.date, "19.02.2026");
+        assert_eq!(feedback.subject, "Math"); // Uses short name if available
+    }
+
+    #[test]
+    fn test_feedback_negative_badge_type() {
+        let raw = FeedbackRaw {
+            id: Some(2),
+            badge_name: Some("No homework".to_string()),
+            badge_icon: Some("no-homework.png".to_string()),
+            badge_type_id: Some(2), // 2 = negative
+            text: Some("Missing homework".to_string()),
+            created_date: Some("18.02.2026".to_string()),
+            created_by: Some("Teacher Name".to_string()),
+            course_name: Some("English".to_string()),
+            course_short_name: None,
+        };
+
+        let feedback = Feedback::from_raw(&raw);
+
+        assert!(!feedback.is_positive);
+        assert_eq!(feedback.subject, "English"); // Falls back to course_name
+    }
+
+    #[test]
+    fn test_feedback_default_positive_when_missing_type() {
+        let raw = FeedbackRaw {
+            id: Some(3),
+            badge_name: Some("Unknown".to_string()),
+            badge_icon: None,
+            badge_type_id: None, // Missing type defaults to positive
+            text: None,
+            created_date: None,
+            created_by: None,
+            course_name: None,
+            course_short_name: None,
+        };
+
+        let feedback = Feedback::from_raw(&raw);
+
+        assert!(feedback.is_positive); // Defaults to positive
+        assert_eq!(feedback.date, "N/A"); // Missing date shows N/A
+    }
+
+    #[test]
+    fn test_feedback_emoji_mapping() {
+        // Test positive badge icon
+        let positive = Feedback {
+            id: 1,
+            badge_name: "Excellent".to_string(),
+            badge_icon: Some("excellence.png".to_string()),
+            comment: None,
+            is_positive: true,
+            date: "19.02.2026".to_string(),
+            teacher: "Teacher".to_string(),
+            subject: "Math".to_string(),
+        };
+        assert_eq!(positive.emoji(), "🌟");
+
+        // Test negative badge icon
+        let negative = Feedback {
+            id: 2,
+            badge_name: "No homework".to_string(),
+            badge_icon: Some("no-homework.png".to_string()),
+            comment: None,
+            is_positive: false,
+            date: "19.02.2026".to_string(),
+            teacher: "Teacher".to_string(),
+            subject: "Math".to_string(),
+        };
+        assert_eq!(negative.emoji(), "📝❌");
+
+        // Test fallback for unknown icon
+        let unknown = Feedback {
+            id: 3,
+            badge_name: "Unknown".to_string(),
+            badge_icon: Some("unknown-icon.png".to_string()),
+            comment: None,
+            is_positive: true,
+            date: "19.02.2026".to_string(),
+            teacher: "Teacher".to_string(),
+            subject: "Math".to_string(),
+        };
+        assert_eq!(unknown.emoji(), "⭐"); // Falls back to positive default
+
+        // Test fallback for no icon
+        let no_icon = Feedback {
+            id: 4,
+            badge_name: "Plain".to_string(),
+            badge_icon: None,
+            comment: None,
+            is_positive: false,
+            date: "19.02.2026".to_string(),
+            teacher: "Teacher".to_string(),
+            subject: "Math".to_string(),
+        };
+        assert_eq!(no_icon.emoji(), "⚠️"); // Falls back to negative default
+    }
+}

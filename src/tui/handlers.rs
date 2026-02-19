@@ -384,3 +384,84 @@ fn handle_thread_view(app: &mut App, key: KeyEvent) -> Action {
         _ => Action::None,
     }
 }
+
+/// Get context-aware keybindings for the current app state
+/// Returns a list of (key, description) pairs
+/// This is defined here alongside the actual key handlers to keep them in sync
+pub fn get_keybindings(app: &App) -> Vec<(&'static str, &'static str)> {
+    let mut bindings = Vec::new();
+
+    // Always available
+    bindings.push(("?", "Show/hide this help"));
+    bindings.push(("Ctrl+C", "Quit immediately"));
+
+    // Check for special modes first
+    if app.input_mode != InputMode::Normal {
+        // Input mode keybindings (see handle_input_mode)
+        bindings.push(("Esc", "Cancel input"));
+        bindings.push(("Enter", "Submit/next field"));
+        bindings.push(("Backspace", "Delete character"));
+        bindings.push(("←/→", "Move cursor"));
+        bindings.push(("Home/End", "Jump to start/end"));
+        if app.input_mode == InputMode::ComposeSubject {
+            bindings.push(("Tab", "Move to message body"));
+        }
+        return bindings;
+    }
+
+    // Message thread view (see handle_thread_view)
+    if app.current_tab == Tab::Messages && app.message_view == MessageView::Thread {
+        bindings.push(("Esc / q", "Close thread"));
+        bindings.push(("r", "Reply to thread"));
+        bindings.push(("↓/j, ↑/k", "Scroll messages"));
+        return bindings;
+    }
+
+    // Compose view - recipient selection (see handle_compose_view)
+    if app.current_tab == Tab::Messages && app.message_view == MessageView::Compose {
+        bindings.push(("Esc", "Cancel compose"));
+        bindings.push(("↓/j, ↑/k", "Navigate recipients"));
+        bindings.push(("Enter / Space", "Toggle recipient"));
+        bindings.push(("s", "Start writing subject"));
+        return bindings;
+    }
+
+    // Normal mode - common bindings (see handle_key)
+    bindings.push(("q / Esc", "Quit"));
+    bindings.push(("←/h/{, →/l/}", "Switch tabs"));
+    bindings.push(("Tab", "Toggle focus (students/content)"));
+    bindings.push(("↓/j, ↑/k", "Navigate list / Scroll"));
+    bindings.push(("1-5", "Quick select student"));
+    bindings.push(("r", "Refresh data"));
+    bindings.push(("R", "Force refresh all"));
+    bindings.push(("G", "Toggle language (BG/EN)"));
+    bindings.push(("[-/[, +/]/=", "Resize students pane"));
+
+    // Tab-specific bindings
+    match app.current_tab {
+        Tab::Overview => {
+            bindings.push(("</>", "Resize overview split"));
+        }
+        Tab::Schedule => {
+            bindings.push(("p", "Previous day"));
+            bindings.push(("n", "Next day"));
+            bindings.push(("t", "Go to today"));
+        }
+        Tab::Notifications => {
+            bindings.push(("Enter", "Go to related tab"));
+        }
+        Tab::Messages => {
+            bindings.push(("Enter", "Open thread"));
+            bindings.push(("c", "Compose new message"));
+        }
+        Tab::Settings => {
+            bindings.push(("L", "Logout"));
+            bindings.push(("1", "Login with password"));
+            bindings.push(("2", "Login with Google"));
+            bindings.push(("3", "Import token from iOS"));
+        }
+        _ => {}
+    }
+
+    bindings
+}

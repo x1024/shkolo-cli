@@ -1020,86 +1020,6 @@ impl App {
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
     }
-
-    /// Get context-aware keybindings for the current app state
-    /// Returns a list of (key, description) pairs
-    pub fn get_keybindings(&self) -> Vec<(&'static str, &'static str)> {
-        let mut bindings = Vec::new();
-
-        // Always available
-        bindings.push(("?", "Show/hide this help"));
-        bindings.push(("Ctrl+C", "Quit immediately"));
-
-        // Check for special modes first
-        if self.input_mode != InputMode::Normal {
-            // Input mode keybindings
-            bindings.push(("Esc", "Cancel input"));
-            bindings.push(("Enter", "Submit/next field"));
-            bindings.push(("Backspace", "Delete character"));
-            bindings.push(("←/→", "Move cursor"));
-            bindings.push(("Home/End", "Jump to start/end"));
-            if self.input_mode == InputMode::ComposeSubject {
-                bindings.push(("Tab", "Move to message body"));
-            }
-            return bindings;
-        }
-
-        // Message thread view
-        if self.current_tab == Tab::Messages && self.message_view == MessageView::Thread {
-            bindings.push(("Esc / q", "Close thread"));
-            bindings.push(("r", "Reply to thread"));
-            bindings.push(("↓/j, ↑/k", "Scroll messages"));
-            return bindings;
-        }
-
-        // Compose view (recipient selection)
-        if self.current_tab == Tab::Messages && self.message_view == MessageView::Compose {
-            bindings.push(("Esc", "Cancel compose"));
-            bindings.push(("↓/j, ↑/k", "Navigate recipients"));
-            bindings.push(("Enter / Space", "Toggle recipient"));
-            bindings.push(("s", "Start writing subject"));
-            return bindings;
-        }
-
-        // Normal mode - common bindings
-        bindings.push(("q / Esc", "Quit"));
-        bindings.push(("←/h/{, →/l/}", "Switch tabs"));
-        bindings.push(("Tab", "Toggle focus (students/content)"));
-        bindings.push(("↓/j, ↑/k", "Navigate list / Scroll"));
-        bindings.push(("1-5", "Quick select student"));
-        bindings.push(("r", "Refresh data"));
-        bindings.push(("R", "Force refresh all"));
-        bindings.push(("G", "Toggle language (BG/EN)"));
-        bindings.push(("[-/[, +/]/=", "Resize students pane"));
-
-        // Tab-specific bindings
-        match self.current_tab {
-            Tab::Overview => {
-                bindings.push(("</>", "Resize overview split"));
-            }
-            Tab::Schedule => {
-                bindings.push(("p", "Previous day"));
-                bindings.push(("n", "Next day"));
-                bindings.push(("t", "Go to today"));
-            }
-            Tab::Notifications => {
-                bindings.push(("Enter", "Go to related tab"));
-            }
-            Tab::Messages => {
-                bindings.push(("Enter", "Open thread"));
-                bindings.push(("c", "Compose new message"));
-            }
-            Tab::Settings => {
-                bindings.push(("L", "Logout"));
-                bindings.push(("1", "Login with password"));
-                bindings.push(("2", "Login with Google"));
-                bindings.push(("3", "Import token from iOS"));
-            }
-            _ => {}
-        }
-
-        bindings
-    }
 }
 
 impl Default for App {
@@ -1116,4 +1036,301 @@ pub enum ClickResult {
     ItemSelected,
     ActivateNotification,
     ActivateMessage,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_initial_state() {
+        let app = App::new();
+
+        assert!(app.running);
+        assert_eq!(app.current_tab, Tab::Overview);
+        assert_eq!(app.focus, Focus::Students);
+        assert_eq!(app.selected_student, 0);
+        assert!(!app.loading);
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn test_students_pane_resize() {
+        let mut app = App::new();
+        let initial_width = app.students_pane_width;
+
+        // Increase width
+        app.resize_students_pane(5);
+        assert_eq!(app.students_pane_width, initial_width + 5);
+
+        // Decrease width
+        app.resize_students_pane(-3);
+        assert_eq!(app.students_pane_width, initial_width + 2);
+    }
+
+    #[test]
+    fn test_students_pane_resize_bounds() {
+        let mut app = App::new();
+
+        // Try to shrink below minimum (15)
+        app.students_pane_width = 20;
+        app.resize_students_pane(-10);
+        assert_eq!(app.students_pane_width, 15); // Clamped to min
+
+        // Try to grow above maximum (60)
+        app.students_pane_width = 55;
+        app.resize_students_pane(10);
+        assert_eq!(app.students_pane_width, 60); // Clamped to max
+    }
+
+    #[test]
+    fn test_overview_split_resize() {
+        let mut app = App::new();
+        let initial_split = app.overview_split_percent;
+
+        // Increase split
+        app.resize_overview_split(10);
+        assert_eq!(app.overview_split_percent, initial_split + 10);
+
+        // Decrease split
+        app.resize_overview_split(-5);
+        assert_eq!(app.overview_split_percent, initial_split + 5);
+    }
+
+    #[test]
+    fn test_overview_split_resize_bounds() {
+        let mut app = App::new();
+
+        // Try to shrink below minimum (20)
+        app.overview_split_percent = 25;
+        app.resize_overview_split(-10);
+        assert_eq!(app.overview_split_percent, 20); // Clamped to min
+
+        // Try to grow above maximum (70)
+        app.overview_split_percent = 65;
+        app.resize_overview_split(10);
+        assert_eq!(app.overview_split_percent, 70); // Clamped to max
+    }
+
+    #[test]
+    fn test_tab_navigation() {
+        let mut app = App::new();
+        assert_eq!(app.current_tab, Tab::Overview);
+
+        // Next tab (Overview -> Homework)
+        app.next_tab();
+        assert_eq!(app.current_tab, Tab::Homework);
+
+        // Previous tab (Homework -> Overview)
+        app.prev_tab();
+        assert_eq!(app.current_tab, Tab::Overview);
+
+        // Previous tab wraps around (Overview -> Settings)
+        app.prev_tab();
+        assert_eq!(app.current_tab, Tab::Settings);
+    }
+
+    #[test]
+    fn test_focus_toggle_on_overview() {
+        let mut app = App::new();
+        app.current_tab = Tab::Overview;
+        assert_eq!(app.focus, Focus::Students);
+
+        // Toggle cycles through: Students -> OverviewSchedule -> OverviewHomework -> OverviewGrades -> Students
+        app.toggle_focus();
+        assert_eq!(app.focus, Focus::OverviewSchedule);
+
+        app.toggle_focus();
+        assert_eq!(app.focus, Focus::OverviewHomework);
+
+        app.toggle_focus();
+        assert_eq!(app.focus, Focus::OverviewGrades);
+
+        app.toggle_focus();
+        assert_eq!(app.focus, Focus::Students);
+    }
+
+    #[test]
+    fn test_student_selection() {
+        let mut app = App::new();
+
+        // Add mock students
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Student 1".to_string(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 2, name: "Student 2".to_string(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 3, name: "Student 3".to_string(), class_name: None, school_name: None }),
+        ];
+
+        assert_eq!(app.selected_student, 0);
+
+        // Next student
+        app.next_student();
+        assert_eq!(app.selected_student, 1);
+
+        // Select by index
+        app.select_student(2);
+        assert_eq!(app.selected_student, 2);
+
+        // Previous student
+        app.prev_student();
+        assert_eq!(app.selected_student, 1);
+    }
+
+    #[test]
+    fn test_student_selection_bounds() {
+        let mut app = App::new();
+
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Student 1".to_string(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 2, name: "Student 2".to_string(), class_name: None, school_name: None }),
+        ];
+
+        // Try to select beyond bounds - should be ignored
+        app.selected_student = 0;
+        app.select_student(5);
+        assert_eq!(app.selected_student, 0); // Unchanged (invalid index ignored)
+
+        // prev_student wraps around to last student
+        app.selected_student = 0;
+        app.prev_student();
+        assert_eq!(app.selected_student, 1); // Wraps to last (index 1)
+    }
+
+    #[test]
+    fn test_help_toggle() {
+        let mut app = App::new();
+        assert!(!app.show_help);
+
+        app.toggle_help();
+        assert!(app.show_help);
+
+        app.toggle_help();
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn test_schedule_date_navigation() {
+        let mut app = App::new();
+        app.schedule_date = "2026-02-19".to_string();
+
+        app.schedule_next_day();
+        assert_eq!(app.schedule_date, "2026-02-20");
+
+        app.schedule_prev_day();
+        assert_eq!(app.schedule_date, "2026-02-19");
+    }
+
+    #[test]
+    fn test_scroll_operations() {
+        let mut app = App::new();
+        // Need to be on a tab that uses list_offset with Content focus
+        app.current_tab = Tab::Notifications;
+        app.focus = Focus::Content;
+
+        // Add some items so scrolling works
+        app.notifications = vec![
+            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None },
+            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None },
+            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None },
+        ];
+
+        assert_eq!(app.list_offset, 0);
+
+        app.scroll_down();
+        assert_eq!(app.list_offset, 1);
+
+        app.scroll_down();
+        assert_eq!(app.list_offset, 2);
+
+        app.scroll_up();
+        assert_eq!(app.list_offset, 1);
+
+        // Can't go below 0
+        app.scroll_up();
+        app.scroll_up();
+        assert_eq!(app.list_offset, 0);
+    }
+
+    #[test]
+    fn test_message_view_states() {
+        let mut app = App::new();
+        app.current_tab = Tab::Messages;
+
+        assert_eq!(app.message_view, MessageView::List);
+
+        // Add mock messages
+        app.messages = vec![MessageThread {
+            id: 1,
+            subject: "Test".to_string(),
+            last_message: "Preview".to_string(),
+            last_sender: "Sender".to_string(),
+            participant_count: 1,
+            is_unread: true,
+            updated_at: "19.02.2026".to_string(),
+            creator: "Creator".to_string(),
+        }];
+
+        // Open thread
+        app.list_offset = 0;
+        let thread_id = app.open_thread();
+        assert_eq!(thread_id, Some(1));
+        assert_eq!(app.message_view, MessageView::Thread);
+
+        // Close thread
+        app.close_thread();
+        assert_eq!(app.message_view, MessageView::List);
+    }
+
+    #[test]
+    fn test_input_mode_operations() {
+        let mut app = App::new();
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        // start_reply only works when in Thread view
+        app.message_view = MessageView::Thread;
+        app.start_reply();
+        assert_eq!(app.input_mode, InputMode::Reply);
+        assert!(app.input_buffer.is_empty());
+
+        // Type some text
+        app.input_char('H');
+        app.input_char('i');
+        assert_eq!(app.input_buffer, "Hi");
+        assert_eq!(app.input_cursor, 2);
+
+        // Move cursor
+        app.input_left();
+        assert_eq!(app.input_cursor, 1);
+
+        // Backspace
+        app.input_backspace();
+        assert_eq!(app.input_buffer, "i");
+        assert_eq!(app.input_cursor, 0);
+
+        // Cancel input
+        app.cancel_input();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.input_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_status_and_error_messages() {
+        let mut app = App::new();
+
+        // Set status
+        app.set_status("Loading...");
+        assert_eq!(app.status_message, Some("Loading...".to_string()));
+
+        // Clear status
+        app.clear_status();
+        assert_eq!(app.status_message, None);
+
+        // Set error
+        app.set_error("Something went wrong");
+        assert_eq!(app.error_message, Some("Something went wrong".to_string()));
+
+        // Clear error
+        app.clear_error();
+        assert_eq!(app.error_message, None);
+    }
 }

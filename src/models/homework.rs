@@ -65,3 +65,130 @@ impl Homework {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_due_date_parsing() {
+        let item = HomeworkItem {
+            id: Some(1),
+            homework_text: Some("Do math".to_string()),
+            homework_due_date: Some("25.02.2026".to_string()),
+            shi_date: Some("20.02.2026".to_string()),
+            shi_date_for_sort: Some("2026-02-20".to_string()),
+        };
+
+        let hw = Homework::from_item(&item, "Math");
+
+        assert_eq!(hw.due_date, Some("25.02.2026".to_string()));
+        assert_eq!(hw.due_date_sort, Some("2026-02-25".to_string()));
+    }
+
+    #[test]
+    fn test_due_date_parsing_invalid() {
+        let item = HomeworkItem {
+            id: Some(1),
+            homework_text: Some("Do math".to_string()),
+            homework_due_date: Some("invalid-date".to_string()),
+            shi_date: None,
+            shi_date_for_sort: None,
+        };
+
+        let hw = Homework::from_item(&item, "Math");
+
+        assert_eq!(hw.due_date, Some("invalid-date".to_string()));
+        assert_eq!(hw.due_date_sort, None); // Invalid format returns None
+    }
+
+    #[test]
+    fn test_homework_sorting_future_ascending() {
+        // Future homework should be sorted by due_date ascending (soonest first)
+        let mut homework = vec![
+            Homework {
+                id: Some(1),
+                subject: "Math".to_string(),
+                text: "HW 1".to_string(),
+                date: "20.02.2026".to_string(),
+                due_date: Some("28.02.2026".to_string()),
+                date_sort: Some("2026-02-20".to_string()),
+                due_date_sort: Some("2026-02-28".to_string()),
+            },
+            Homework {
+                id: Some(2),
+                subject: "English".to_string(),
+                text: "HW 2".to_string(),
+                date: "20.02.2026".to_string(),
+                due_date: Some("22.02.2026".to_string()),
+                date_sort: Some("2026-02-20".to_string()),
+                due_date_sort: Some("2026-02-22".to_string()),
+            },
+            Homework {
+                id: Some(3),
+                subject: "History".to_string(),
+                text: "HW 3".to_string(),
+                date: "20.02.2026".to_string(),
+                due_date: Some("25.02.2026".to_string()),
+                date_sort: Some("2026-02-20".to_string()),
+                due_date_sort: Some("2026-02-25".to_string()),
+            },
+        ];
+
+        // Sort ascending by due_date (soonest first)
+        homework.sort_by(|a, b| {
+            let a_due = a.due_date_sort.as_deref().unwrap_or("9999-99-99");
+            let b_due = b.due_date_sort.as_deref().unwrap_or("9999-99-99");
+            a_due.cmp(b_due)
+        });
+
+        assert_eq!(homework[0].subject, "English"); // 22nd - soonest
+        assert_eq!(homework[1].subject, "History"); // 25th
+        assert_eq!(homework[2].subject, "Math");    // 28th - latest
+    }
+
+    #[test]
+    fn test_homework_sorting_past_descending() {
+        // Past homework should be sorted by due_date descending (newest first)
+        let mut homework = vec![
+            Homework {
+                id: Some(1),
+                subject: "Math".to_string(),
+                text: "HW 1".to_string(),
+                date: "10.02.2026".to_string(),
+                due_date: Some("12.02.2026".to_string()),
+                date_sort: Some("2026-02-10".to_string()),
+                due_date_sort: Some("2026-02-12".to_string()),
+            },
+            Homework {
+                id: Some(2),
+                subject: "English".to_string(),
+                text: "HW 2".to_string(),
+                date: "05.02.2026".to_string(),
+                due_date: Some("07.02.2026".to_string()),
+                date_sort: Some("2026-02-05".to_string()),
+                due_date_sort: Some("2026-02-07".to_string()),
+            },
+            Homework {
+                id: Some(3),
+                subject: "History".to_string(),
+                text: "HW 3".to_string(),
+                date: "15.02.2026".to_string(),
+                due_date: Some("17.02.2026".to_string()),
+                date_sort: Some("2026-02-15".to_string()),
+                due_date_sort: Some("2026-02-17".to_string()),
+            },
+        ];
+
+        // Sort descending by due_date (newest first)
+        homework.sort_by(|a, b| {
+            let a_due = a.due_date_sort.as_deref().unwrap_or("0000-00-00");
+            let b_due = b.due_date_sort.as_deref().unwrap_or("0000-00-00");
+            b_due.cmp(a_due)
+        });
+
+        assert_eq!(homework[0].subject, "History"); // 17th - most recent
+        assert_eq!(homework[1].subject, "Math");    // 12th
+        assert_eq!(homework[2].subject, "English"); // 7th - oldest
+    }
+}
