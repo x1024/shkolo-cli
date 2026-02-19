@@ -105,6 +105,9 @@ impl T {
     pub fn loading(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Зареждане...", Lang::En => "Loading..." }
     }
+    pub fn loading_base(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Зареждане", Lang::En => "Loading" }
+    }
     pub fn no_homework(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Няма домашни", Lang::En => "No homework found" }
     }
@@ -157,11 +160,61 @@ impl T {
     pub fn help_quit(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "[Q] Изход", Lang::En => "[Q]uit" }
     }
-    pub fn help_tabs(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "[</>] Раздели", Lang::En => "[</>]Tabs" }
+    pub fn help_help(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "[?] Помощ", Lang::En => "[?]Help" }
     }
-    pub fn help_select(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "[^v] Избор", Lang::En => "[^v]Select" }
+
+    // Status bar
+    pub fn last_refresh(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Последно:", Lang::En => "Last:" }
+    }
+    pub fn loading_data(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Зареждане данни...", Lang::En => "Loading data..." }
+    }
+    pub fn loading_thread(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Зареждане нишка...", Lang::En => "Loading thread..." }
+    }
+    pub fn loading_recipients(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Зареждане получатели...", Lang::En => "Loading recipients..." }
+    }
+    pub fn error_prefix(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Грешка:", Lang::En => "Error:" }
+    }
+    pub fn failed_load_thread(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Грешка при зареждане на нишка:", Lang::En => "Failed to load thread:" }
+    }
+    pub fn loaded(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Заредено", Lang::En => "Loaded" }
+    }
+    pub fn google_login_not_impl(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Google вход не е реализиран в TUI", Lang::En => "Google login not yet implemented in TUI" }
+    }
+    pub fn import_failed(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Грешка при импорт:", Lang::En => "Import failed:" }
+    }
+    pub fn press_enter(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Натиснете Enter за продължаване...", Lang::En => "Press Enter to continue..." }
+    }
+    pub fn sending(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Изпращане...", Lang::En => "Sending..." }
+    }
+    pub fn sending_message(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Изпращане на съобщение...", Lang::En => "Sending message..." }
+    }
+    pub fn message_sent(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Съобщението е изпратено!", Lang::En => "Message sent!" }
+    }
+    pub fn sent_reload_failed(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Изпратено, но презареждане се провали:", Lang::En => "Sent, but reload failed:" }
+    }
+    pub fn send_failed(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Грешка при изпращане:", Lang::En => "Send failed:" }
+    }
+    pub fn logout_error(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Грешка при изход:", Lang::En => "Logout error:" }
+    }
+    pub fn logged_out(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Излязохте. Рестартирайте за нов вход.", Lang::En => "Logged out. Restart to log in again." }
     }
 
     // Settings/Account

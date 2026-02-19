@@ -21,6 +21,7 @@ use std::future::Future;
 
 use api::ShkoloClient;
 use cache::CacheStore;
+use i18n::T;
 use models::*;
 use tui::{App, draw, handle_key, handlers::Action, app::{ClickResult, StudentData}};
 
@@ -487,11 +488,11 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
     if app.students.is_empty() {
         // Show loading state
         app.loading = true;
-        app.set_status("Loading data...");
+        app.set_status(T::loading_data(app.lang));
         terminal.draw(|f| draw(f, &app))?;
 
         if let Err(e) = app.refresh_data(&client, cache, false).await {
-            app.set_status(format!("Error: {}", e));
+            app.set_status(format!("{} {}", T::error_prefix(app.lang), e));
         }
     }
 
@@ -547,11 +548,11 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                             if let Some(student_data) = app.students.iter_mut().find(|s| s.student.id == student_id) {
                                 student_data.schedule = schedule;
                             }
-                            app.set_status(format!("Loaded {}", date));
+                            app.set_status(format!("{} {}", T::loaded(app.lang), date));
                         }
                     }
                 } else if let Some(Err(e)) = result {
-                    app.set_status(format!("Error: {}", e));
+                    app.set_status(format!("{} {}", T::error_prefix(app.lang), e));
                 }
             }
 
@@ -589,7 +590,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                     app.loading = true;
                                     let schedule_date = app.schedule_date.clone();
                                     let student_id = app.current_student().map(|s| s.student.id);
-                                    app.set_status(format!("Loading {}...", schedule_date));
+                                    app.set_status(format!("{} {}...", T::loading_base(app.lang), schedule_date));
                                     if let Some(sid) = student_id {
                                         let client_clone = client.clone();
                                         let cache_clone = cache.clone();
@@ -601,9 +602,9 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                 Action::Logout => {
                                     // Clear token and exit
                                     if let Err(e) = cache.clear_token() {
-                                        app.set_status(format!("Logout error: {}", e));
+                                        app.set_status(format!("{} {}", T::logout_error(app.lang), e));
                                     } else {
-                                        app.set_status("Logged out. Restart to log in again.");
+                                        app.set_status(T::logged_out(app.lang));
                                         app.user_name = None;
                                         // Exit after logout
                                         app.quit();
@@ -645,16 +646,16 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                             }
                                         }
                                         app.loading = true;
-                                        app.set_status("Loading data...");
+                                        app.set_status(T::loading_data(app.lang));
                                         terminal.draw(|f| draw(f, &app))?;
                                         if let Err(e) = app.refresh_data(&client, cache, true).await {
-                                            app.set_status(format!("Error: {}", e));
+                                            app.set_status(format!("{} {}", T::error_prefix(app.lang), e));
                                         }
                                     }
                                 }
                                 Action::LoginGoogle => {
                                     // Google login requires browser - show message
-                                    app.set_status("Google login not yet implemented in TUI");
+                                    app.set_status(T::google_login_not_impl(app.lang));
                                 }
                                 Action::ImportToken => {
                                     // Temporarily exit raw mode for import output
@@ -662,9 +663,9 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                     execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
                                     if let Err(e) = import_token(cache) {
-                                        eprintln!("Import failed: {}", e);
+                                        eprintln!("{} {}", T::import_failed(app.lang), e);
                                     }
-                                    println!("\nPress Enter to continue...");
+                                    println!("\n{}", T::press_enter(app.lang));
                                     let mut input = String::new();
                                     let _ = io::stdin().read_line(&mut input);
 
@@ -681,17 +682,17 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                             }
                                         }
                                         app.loading = true;
-                                        app.set_status("Loading data...");
+                                        app.set_status(T::loading_data(app.lang));
                                         terminal.draw(|f| draw(f, &app))?;
                                         if let Err(e) = app.refresh_data(&client, cache, true).await {
-                                            app.set_status(format!("Error: {}", e));
+                                            app.set_status(format!("{} {}", T::error_prefix(app.lang), e));
                                         }
                                     }
                                 }
                                 Action::OpenThread(thread_id) => {
                                     // Load thread messages
                                     app.loading = true;
-                                    app.set_status("Loading thread...");
+                                    app.set_status(T::loading_thread(app.lang));
                                     terminal.draw(|f| draw(f, &app))?;
 
                                     match client.get_thread_messages(thread_id).await {
@@ -701,7 +702,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                             app.clear_status();
                                         }
                                         Err(e) => {
-                                            app.set_error(format!("Failed to load thread:\n{}", e));
+                                            app.set_error(format!("{}\n{}", T::failed_load_thread(app.lang), e));
                                             app.loading = false;
                                             app.close_thread();
                                         }
@@ -713,7 +714,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                 Action::SendReply(message) => {
                                     if let Some(thread_id) = app.selected_thread_id {
                                         app.loading = true;
-                                        app.set_status("Sending...");
+                                        app.set_status(T::sending(app.lang));
                                         terminal.draw(|f| draw(f, &app))?;
 
                                         match client.reply_to_thread(thread_id, &message).await {
@@ -722,15 +723,15 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                                 match client.get_thread_messages(thread_id).await {
                                                     Ok(messages) => {
                                                         app.thread_messages = messages;
-                                                        app.set_status("Message sent!");
+                                                        app.set_status(T::message_sent(app.lang));
                                                     }
                                                     Err(e) => {
-                                                        app.set_status(format!("Sent, but reload failed: {}", e));
+                                                        app.set_status(format!("{} {}", T::sent_reload_failed(app.lang), e));
                                                     }
                                                 }
                                             }
                                             Err(e) => {
-                                                app.set_status(format!("Send failed: {}", e));
+                                                app.set_status(format!("{} {}", T::send_failed(app.lang), e));
                                             }
                                         }
                                         app.loading = false;
@@ -739,7 +740,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                 Action::StartCompose => {
                                     // Fetch recipients
                                     app.loading = true;
-                                    app.set_status("Loading recipients...");
+                                    app.set_status(T::loading_recipients(app.lang));
                                     terminal.draw(|f| draw(f, &app))?;
 
                                     match client.get_recipients().await {
@@ -749,7 +750,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                             app.clear_status();
                                         }
                                         Err(e) => {
-                                            app.set_status(format!("Error: {}", e));
+                                            app.set_status(format!("{} {}", T::error_prefix(app.lang), e));
                                             app.loading = false;
                                             app.cancel_compose();
                                         }
@@ -757,19 +758,19 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                 }
                                 Action::SendCompose { subject, body, recipients } => {
                                     app.loading = true;
-                                    app.set_status("Sending message...");
+                                    app.set_status(T::sending_message(app.lang));
                                     terminal.draw(|f| draw(f, &app))?;
 
                                     match client.create_thread(&recipients, &subject, &body).await {
                                         Ok(_) => {
-                                            app.set_status("Message sent!");
+                                            app.set_status(T::message_sent(app.lang));
                                             // Refresh messages list
                                             if let Ok(messages) = app.fetch_messages(&client).await {
                                                 app.messages = messages;
                                             }
                                         }
                                         Err(e) => {
-                                            app.set_status(format!("Send failed: {}", e));
+                                            app.set_status(format!("{} {}", T::send_failed(app.lang), e));
                                         }
                                     }
                                     app.loading = false;
@@ -810,14 +811,14 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                                 ClickResult::ActivateMessage(index) => {
                                                     if let Some(thread_id) = app.open_thread_at(index) {
                                                         // Load thread messages
-                                                        app.set_status("Loading thread...");
+                                                        app.set_status(T::loading_thread(app.lang));
                                                         match client.get_thread_messages(thread_id).await {
                                                             Ok(messages) => {
                                                                 app.thread_messages = messages;
                                                                 app.clear_status();
                                                             }
                                                             Err(e) => {
-                                                                app.set_error(format!("Failed to load thread:\n{}", e));
+                                                                app.set_error(format!("{}\n{}", T::failed_load_thread(app.lang), e));
                                                                 app.close_thread();
                                                             }
                                                         }

@@ -1700,7 +1700,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let refresh_info = app.last_refresh
         .as_ref()
-        .map(|t| format!("Last: {}", t))
+        .map(|t| format!("{} {}", T::last_refresh(lang), t))
         .unwrap_or_default();
 
     let user_info = app.user_name
@@ -1708,15 +1708,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .map(|n| format!("[{}]", n))
         .unwrap_or_default();
 
-    let focus_hint = match app.focus {
-        Focus::Students => format!("[Tab]->{}", T::schedule(lang)),
-        Focus::OverviewSchedule => format!("[Tab]->{}", T::homework(lang)),
-        Focus::OverviewHomework => format!("[Tab]->{}", T::grades(lang)),
-        Focus::OverviewGrades => format!("[Tab]->{}", T::students(lang)),
-        Focus::Content => format!("[Tab]->{}", T::students(lang)),
-    };
-
-    let help = format!("{} {} {} {} {} [1-5] [-/+]", T::help_refresh(lang), T::help_quit(lang), T::help_tabs(lang), T::help_select(lang), focus_hint);
+    // Simplified toolbar - just essential shortcuts, use ? for full help
+    let help = format!("{} {} {}", T::help_help(lang), T::help_refresh(lang), T::help_quit(lang));
 
     // Left side: help text and status
     let left_content = Line::from(vec![
