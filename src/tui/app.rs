@@ -427,6 +427,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)] // Keep for potential future use (e.g., mouse selection)
     pub fn select_student(&mut self, index: usize) {
         if index < self.students.len() {
             self.selected_student = index;

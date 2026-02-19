@@ -9,9 +9,6 @@ pub enum Action {
     RefreshAll,
     RefreshSchedule, // Refresh schedule for current schedule_date
     Logout,
-    LoginPassword,
-    LoginGoogle,
-    ImportToken,
     // Message actions
     OpenThread(i64),       // Open thread with given ID
     CloseThread,           // Close current thread
@@ -73,15 +70,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
             KeyCode::Char('l') | KeyCode::Char('L') => {
                 return Action::Logout;
-            }
-            KeyCode::Char('1') => {
-                return Action::LoginPassword;
-            }
-            KeyCode::Char('2') => {
-                return Action::LoginGoogle;
-            }
-            KeyCode::Char('3') => {
-                return Action::ImportToken;
             }
             _ => {}
         }
@@ -447,9 +435,6 @@ pub fn get_keybindings(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         Tab::Settings => {
             bindings.push(("L", T::logout(lang)));
-            bindings.push(("1", T::key_login_password(lang)));
-            bindings.push(("2", T::key_login_google(lang)));
-            bindings.push(("3", T::key_import_token_ios(lang)));
         }
         _ => {}
     }

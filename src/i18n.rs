@@ -186,15 +186,6 @@ impl T {
     pub fn loaded(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Заредено", Lang::En => "Loaded" }
     }
-    pub fn google_login_not_impl(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Google вход не е реализиран в TUI", Lang::En => "Google login not yet implemented in TUI" }
-    }
-    pub fn import_failed(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Грешка при импорт:", Lang::En => "Import failed:" }
-    }
-    pub fn press_enter(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Натиснете Enter за продължаване...", Lang::En => "Press Enter to continue..." }
-    }
     pub fn sending(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Изпращане...", Lang::En => "Sending..." }
     }
@@ -336,15 +327,6 @@ impl T {
     }
     pub fn key_compose(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Ново съобщение", Lang::En => "Compose new message" }
-    }
-    pub fn key_login_password(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Вход с парола", Lang::En => "Login with password" }
-    }
-    pub fn key_login_google(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Вход с Google", Lang::En => "Login with Google" }
-    }
-    pub fn key_import_token_ios(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Импорт от iOS", Lang::En => "Import token from iOS" }
     }
     pub fn keyboard_shortcuts(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Клавишни комбинации", Lang::En => "Keyboard Shortcuts" }

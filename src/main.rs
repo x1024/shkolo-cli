@@ -442,7 +442,7 @@ async fn run_json_command(
 }
 
 async fn run_tui(cache: &CacheStore) -> Result<()> {
-    let mut client = get_authenticated_client(cache)?;
+    let client = get_authenticated_client(cache)?;
 
     // Setup terminal with mouse support
     enable_raw_mode()?;
@@ -608,85 +608,6 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                         app.user_name = None;
                                         // Exit after logout
                                         app.quit();
-                                    }
-                                }
-                                Action::LoginPassword => {
-                                    // Temporarily exit raw mode for interactive login
-                                    disable_raw_mode()?;
-                                    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
-
-                                    println!("Login with username/password:");
-                                    if let Err(e) = login(cache, None, None).await {
-                                        eprintln!("Login failed: {}", e);
-                                        eprintln!("Press Enter to continue...");
-                                        let mut input = String::new();
-                                        let _ = io::stdin().read_line(&mut input);
-                                    } else {
-                                        println!("Press Enter to continue...");
-                                        let mut input = String::new();
-                                        let _ = io::stdin().read_line(&mut input);
-                                    }
-
-                                    // Re-enter TUI mode
-                                    enable_raw_mode()?;
-                                    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-
-                                    // Reload token and refresh data
-                                    if let Ok(token_data) = cache.load_token() {
-                                        client = ShkoloClient::with_token(token_data.token, token_data.school_year);
-                                        if let Some(data) = token_data.user_data {
-                                            if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
-                                                app.user_name = Some(names.to_string());
-                                            } else if let Some(users) = data.get("users").and_then(|v: &serde_json::Value| v.as_array()) {
-                                                if let Some(first) = users.first() {
-                                                    if let Some(names) = first.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
-                                                        app.user_name = Some(names.to_string());
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        app.loading = true;
-                                        app.set_status(T::loading_data(app.lang));
-                                        terminal.draw(|f| draw(f, &app))?;
-                                        if let Err(e) = app.refresh_data(&client, cache, true).await {
-                                            app.set_status(format!("{} {}", T::error_prefix(app.lang), e));
-                                        }
-                                    }
-                                }
-                                Action::LoginGoogle => {
-                                    // Google login requires browser - show message
-                                    app.set_status(T::google_login_not_impl(app.lang));
-                                }
-                                Action::ImportToken => {
-                                    // Temporarily exit raw mode for import output
-                                    disable_raw_mode()?;
-                                    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
-
-                                    if let Err(e) = import_token(cache) {
-                                        eprintln!("{} {}", T::import_failed(app.lang), e);
-                                    }
-                                    println!("\n{}", T::press_enter(app.lang));
-                                    let mut input = String::new();
-                                    let _ = io::stdin().read_line(&mut input);
-
-                                    // Re-enter TUI mode
-                                    enable_raw_mode()?;
-                                    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
-
-                                    // Reload token and refresh data
-                                    if let Ok(token_data) = cache.load_token() {
-                                        client = ShkoloClient::with_token(token_data.token, token_data.school_year);
-                                        if let Some(data) = token_data.user_data {
-                                            if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
-                                                app.user_name = Some(names.to_string());
-                                            }
-                                        }
-                                        app.loading = true;
-                                        app.set_status(T::loading_data(app.lang));
-                                        terminal.draw(|f| draw(f, &app))?;
-                                        if let Err(e) = app.refresh_data(&client, cache, true).await {
-                                            app.set_status(format!("{} {}", T::error_prefix(app.lang), e));
-                                        }
                                     }
                                 }
                                 Action::OpenThread(thread_id) => {
