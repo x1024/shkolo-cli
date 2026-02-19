@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::i18n::T;
-use super::app::{App, Focus, Tab};
+use super::app::{App, Focus, Tab, InputMode, MessageView};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -25,42 +25,44 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_content(frame, app, chunks[1]);
     draw_status_bar(frame, app, chunks[2]);
 
-    // Draw loading overlay if loading
-    if app.loading {
-        draw_loading_overlay(frame, app);
+    // Draw error overlay if there's an error (loading indicator is now in status bar only)
+    if let Some(ref error) = app.error_message {
+        draw_error_overlay(frame, error);
     }
 }
 
-fn draw_loading_overlay(frame: &mut Frame, app: &App) {
+fn draw_error_overlay(frame: &mut Frame, error: &str) {
     let area = frame.area();
 
-    // Calculate center position for the loading box
-    let width = 30u16;
-    let height = 5u16;
+    // Fixed width for error box
+    let width = (area.width as usize * 2 / 3).max(40).min(area.width as usize - 4) as u16;
+    let inner_width = width.saturating_sub(4) as usize;
+
+    // Wrap text to fit within the box
+    let wrapped_lines = wrap_text(error, inner_width, "");
+
+    let height = (wrapped_lines.len() as u16 + 4).min(area.height - 4);
+
     let x = area.width.saturating_sub(width) / 2;
     let y = area.height.saturating_sub(height) / 2;
 
-    let loading_area = Rect::new(x, y, width, height);
+    let error_area = Rect::new(x, y, width, height);
 
-    // Get spinner frame based on tick counter
-    let spinner_idx = app.tick % SPINNER_FRAMES.len();
-    let spinner = SPINNER_FRAMES[spinner_idx];
+    // Join wrapped lines
+    let wrapped_text = wrapped_lines.join("\n");
 
-    let message = app.status_message.as_deref().unwrap_or("Loading...");
-    let text = format!("{} {}", spinner, message);
-
-    let loading_text = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+    let error_text = Paragraph::new(wrapped_text)
+        .alignment(Alignment::Left)
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .style(Style::default().fg(Color::Red))
         .block(Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(" Loading ")
-            .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+            .border_style(Style::default().fg(Color::Red))
+            .title(" Error [Press any key to dismiss] ")
+            .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
 
-    // Clear the area first, then render the loading box
-    frame.render_widget(Clear, loading_area);
-    frame.render_widget(loading_text, loading_area);
+    frame.render_widget(Clear, error_area);
+    frame.render_widget(error_text, error_area);
 }
 
 fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
@@ -172,18 +174,27 @@ fn draw_students_list(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
+    // First split: schedule vs rest (configurable)
+    let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(40),  // Schedule
-            Constraint::Percentage(35),  // Recent homework
-            Constraint::Percentage(25),  // Grades summary
+            Constraint::Percentage(app.overview_split_percent),
+            Constraint::Percentage(100 - app.overview_split_percent),
         ])
         .split(area);
 
-    draw_overview_schedule(frame, app, chunks[0]);
-    draw_overview_homework(frame, app, chunks[1]);
-    draw_overview_grades(frame, app, chunks[2]);
+    // Second split: homework and grades
+    let bottom_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(60),  // Homework
+            Constraint::Percentage(40),  // Grades summary
+        ])
+        .split(main_chunks[1]);
+
+    draw_overview_schedule(frame, app, main_chunks[0]);
+    draw_overview_homework(frame, app, bottom_chunks[0]);
+    draw_overview_grades(frame, app, bottom_chunks[1]);
 }
 
 fn draw_overview_schedule(frame: &mut Frame, app: &App, area: Rect) {
@@ -257,10 +268,17 @@ fn draw_overview_homework(frame: &mut Frame, app: &App, area: Rect) {
     let today = &app.current_date;
 
     let content = if let Some(data) = app.current_student() {
-        let recent = data.recent_homework();
-        if recent.is_empty() {
+        if data.homework.is_empty() {
             vec![ListItem::new(format!("  {}", T::no_homework(lang)))]
         } else {
+            // Sort homework by due date (soonest first) - same logic as Homework tab
+            let mut sorted_homework: Vec<_> = data.homework.iter().collect();
+            sorted_homework.sort_by(|a, b| {
+                let a_due = a.due_date_sort.as_deref().unwrap_or("9999-99-99");
+                let b_due = b.due_date_sort.as_deref().unwrap_or("9999-99-99");
+                a_due.cmp(b_due)
+            });
+
             // Determine when school day ends today (from schedule)
             let school_day_end_minutes = data.schedule.iter()
                 .map(|h| {
@@ -273,8 +291,31 @@ fn draw_overview_homework(frame: &mut Frame, app: &App, area: Rect) {
             let current_minutes = app.current_time.0 as i32 * 60 + app.current_time.1 as i32;
             let school_day_over = current_minutes > school_day_end_minutes;
 
-            recent.iter()
-                .take(5)
+            // Split into future and past based on due date AND school day - same logic as Homework tab
+            let (future, mut past): (Vec<_>, Vec<_>) = sorted_homework.into_iter().partition(|hw| {
+                match hw.due_date_sort.as_ref() {
+                    Some(d) if d > today => true,  // Future date
+                    Some(d) if d < today => false, // Past date
+                    Some(_) => !school_day_over,    // Today - depends on school day
+                    None => true,                   // No due date - treat as future
+                }
+            });
+
+            // Sort past by descending due date (newest first)
+            past.sort_by(|a, b| {
+                let a_due = a.due_date_sort.as_deref().unwrap_or("0000-00-00");
+                let b_due = b.due_date_sort.as_deref().unwrap_or("0000-00-00");
+                b_due.cmp(a_due)
+            });
+
+            // Show up to 5 items: prioritize future homework, then fill with past
+            let mut items_to_show: Vec<_> = future.into_iter().take(5).collect();
+            let remaining = 5 - items_to_show.len();
+            if remaining > 0 {
+                items_to_show.extend(past.into_iter().take(remaining));
+            }
+
+            items_to_show.iter()
                 .flat_map(|hw| {
                     // Check if homework is still pending (considering school day end)
                     let is_future = match hw.due_date_sort.as_ref() {
@@ -401,19 +442,12 @@ fn draw_overview_grades(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
     let text_width = area.width.saturating_sub(4) as usize; // Account for borders and padding
+    let today = &app.current_date;
 
     let content = if let Some(data) = app.current_student() {
         if data.homework.is_empty() {
             vec![ListItem::new(format!("  {}", T::no_homework(lang)))]
         } else {
-            // Sort homework by due date (soonest first)
-            let mut sorted_homework: Vec<_> = data.homework.iter().collect();
-            sorted_homework.sort_by(|a, b| {
-                let a_due = a.due_date_sort.as_deref().unwrap_or("9999-99-99");
-                let b_due = b.due_date_sort.as_deref().unwrap_or("9999-99-99");
-                a_due.cmp(b_due)
-            });
-
             // Determine when school day ends today (from schedule)
             let school_day_end_minutes = data.schedule.iter()
                 .map(|h| {
@@ -427,8 +461,7 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
             let school_day_over = current_minutes > school_day_end_minutes;
 
             // Split into future and past based on due date AND school day
-            let today = &app.current_date;
-            let (future, past): (Vec<_>, Vec<_>) = sorted_homework.into_iter().partition(|hw| {
+            let (mut future, mut past): (Vec<_>, Vec<_>) = data.homework.iter().partition(|hw| {
                 match hw.due_date_sort.as_ref() {
                     Some(d) if d > today => true,  // Future date
                     Some(d) if d < today => false, // Past date
@@ -437,67 +470,106 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
                 }
             });
 
-            let mut items = Vec::new();
+            // Sort future by due date (soonest first)
+            future.sort_by(|a, b| {
+                let a_due = a.due_date_sort.as_deref().unwrap_or("9999-99-99");
+                let b_due = b.due_date_sort.as_deref().unwrap_or("9999-99-99");
+                a_due.cmp(b_due)
+            });
 
-            // Future homework first (upcoming, due today or later)
-            for hw in future.iter().skip(app.list_offset) {
-                let due_str = hw.due_date
-                    .as_ref()
-                    .map(|d| format!(" -> Due: {}", d))
-                    .unwrap_or_default();
+            // Sort past by due date (newest/most recent first)
+            past.sort_by(|a, b| {
+                let a_due = a.due_date_sort.as_deref().unwrap_or("0000-00-00");
+                let b_due = b.due_date_sort.as_deref().unwrap_or("0000-00-00");
+                b_due.cmp(a_due) // Reversed for newest first
+            });
 
-                let mut lines = vec![
-                    Line::from(Span::styled(
-                        format!("  [{}] {}{}", hw.date, hw.subject, due_str),
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                    )),
-                ];
+            // Build combined list of items with divider
+            #[derive(Clone)]
+            enum HomeworkItem<'a> {
+                Future(&'a crate::models::Homework),
+                Divider,
+                Past(&'a crate::models::Homework),
+            }
 
-                // Wrap the homework text
-                for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
-                    lines.push(Line::from(Span::styled(
-                        wrapped_line,
-                        Style::default().fg(Color::Green),
-                    )));
-                }
-                lines.push(Line::from(""));
+            let mut all_items: Vec<HomeworkItem> = Vec::new();
 
-                items.push(ListItem::new(lines));
+            // Future items first
+            for hw in &future {
+                all_items.push(HomeworkItem::Future(hw));
             }
 
             // Add divider if we have both future and past items
             if !future.is_empty() && !past.is_empty() {
-                let divider = format!("  ─────────────── {} ───────────────", T::past_due(lang));
-                items.push(ListItem::new(Line::from(Span::styled(
-                    divider,
-                    Style::default().fg(Color::DarkGray),
-                ))));
+                all_items.push(HomeworkItem::Divider);
             }
 
-            // Past homework (overdue)
-            for hw in past.iter() {
-                let due_str = hw.due_date
-                    .as_ref()
-                    .map(|d| format!(" -> Due: {}", d))
-                    .unwrap_or_default();
+            // Past items
+            for hw in &past {
+                all_items.push(HomeworkItem::Past(hw));
+            }
 
-                let mut lines = vec![
-                    Line::from(Span::styled(
-                        format!("  [{}] {}{}", hw.date, hw.subject, due_str),
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
-                    )),
-                ];
+            // Now skip and render
+            let mut items = Vec::new();
 
-                // Wrap the homework text
-                for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
-                    lines.push(Line::from(Span::styled(
-                        wrapped_line,
-                        Style::default().fg(Color::DarkGray),
-                    )));
+            for item in all_items.into_iter().skip(app.list_offset) {
+                match item {
+                    HomeworkItem::Future(hw) => {
+                        let due_str = hw.due_date
+                            .as_ref()
+                            .map(|d| format!(" -> Due: {}", d))
+                            .unwrap_or_default();
+
+                        let mut lines = vec![
+                            Line::from(Span::styled(
+                                format!("  [{}] {}{}", hw.date, hw.subject, due_str),
+                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                            )),
+                        ];
+
+                        // Wrap the homework text
+                        for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
+                            lines.push(Line::from(Span::styled(
+                                wrapped_line,
+                                Style::default().fg(Color::Green),
+                            )));
+                        }
+                        lines.push(Line::from(""));
+
+                        items.push(ListItem::new(lines));
+                    }
+                    HomeworkItem::Divider => {
+                        let divider = format!("  ─────────────── {} ───────────────", T::past_due(lang));
+                        items.push(ListItem::new(Line::from(Span::styled(
+                            divider,
+                            Style::default().fg(Color::DarkGray),
+                        ))));
+                    }
+                    HomeworkItem::Past(hw) => {
+                        let due_str = hw.due_date
+                            .as_ref()
+                            .map(|d| format!(" -> Due: {}", d))
+                            .unwrap_or_default();
+
+                        let mut lines = vec![
+                            Line::from(Span::styled(
+                                format!("  [{}] {}{}", hw.date, hw.subject, due_str),
+                                Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                            )),
+                        ];
+
+                        // Wrap the homework text
+                        for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
+                            lines.push(Line::from(Span::styled(
+                                wrapped_line,
+                                Style::default().fg(Color::DarkGray),
+                            )));
+                        }
+                        lines.push(Line::from(""));
+
+                        items.push(ListItem::new(lines));
+                    }
                 }
-                lines.push(Line::from(""));
-
-                items.push(ListItem::new(lines));
             }
 
             items
@@ -1030,6 +1102,15 @@ fn draw_feedbacks(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
+    // Check if we're viewing a thread, compose, or the list
+    match app.message_view {
+        MessageView::Thread => draw_message_thread(frame, app, area),
+        MessageView::List => draw_message_list(frame, app, area),
+        MessageView::Compose => draw_compose(frame, app, area),
+    }
+}
+
+fn draw_message_list(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
     let text_width = area.width.saturating_sub(4) as usize;
 
@@ -1038,8 +1119,10 @@ fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         app.messages
             .iter()
+            .enumerate()
             .skip(app.list_offset)
-            .map(|msg| {
+            .map(|(idx, msg)| {
+                let is_selected = idx == app.list_offset;
                 let style = if msg.is_unread {
                     Style::default().add_modifier(Modifier::BOLD)
                 } else {
@@ -1047,11 +1130,12 @@ fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
                 };
 
                 let unread_marker = if msg.is_unread { T::new_marker(lang) } else { "" };
+                let selected_marker = if is_selected { "▸ " } else { "  " };
 
                 let mut lines = Vec::new();
 
                 // Subject line with unread marker
-                let subject_text = format!("{}{}", unread_marker, msg.subject);
+                let subject_text = format!("{}{}{}", selected_marker, unread_marker, msg.subject);
                 for wrapped_line in wrap_text(&subject_text, text_width, "  ") {
                     lines.push(Line::from(Span::styled(wrapped_line, style)));
                 }
@@ -1090,10 +1174,14 @@ fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_else(|| "unknown".to_string());
 
     let unread_count = app.messages.iter().filter(|m| m.is_unread).count();
+    let enter_hint = match lang {
+        crate::i18n::Lang::Bg => "[Enter]-отвори",
+        crate::i18n::Lang::En => "[Enter]-open",
+    };
     let title = if unread_count > 0 {
-        format!(" {} ({} {}) ({}) ", T::messages(lang), unread_count, T::unread(lang), age)
+        format!(" {} ({} {}) ({}) {} ", T::messages(lang), unread_count, T::unread(lang), age, enter_hint)
     } else {
-        format!(" {} ({}) ", T::messages(lang), age)
+        format!(" {} ({}) {} ", T::messages(lang), age, enter_hint)
     };
 
     let is_focused = app.focus == Focus::Content;
@@ -1110,6 +1198,235 @@ fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
             .title(title));
 
     frame.render_widget(list, area);
+}
+
+fn draw_message_thread(frame: &mut Frame, app: &App, area: Rect) {
+    let lang = app.lang;
+    let text_width = area.width.saturating_sub(4) as usize;
+
+    // If in input mode, split the area
+    let (messages_area, input_area) = if app.input_mode == InputMode::Reply {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(5),
+                Constraint::Length(3),
+            ])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
+
+    // Get current thread subject
+    let subject = app.messages
+        .iter()
+        .find(|m| Some(m.id) == app.selected_thread_id)
+        .map(|m| m.subject.clone())
+        .unwrap_or_else(|| "Thread".to_string());
+
+    // Build message content
+    let content: Vec<ListItem> = if app.thread_messages.is_empty() {
+        vec![ListItem::new(format!("  {}", T::loading(lang)))]
+    } else {
+        app.thread_messages
+            .iter()
+            .skip(app.thread_offset)
+            .map(|msg| {
+                let mut lines = Vec::new();
+
+                // Sender and date
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {} ", msg.sender_name),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        msg.date.clone(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+
+                // Message body
+                for wrapped_line in wrap_text(&msg.body, text_width, "    ") {
+                    lines.push(Line::from(Span::raw(wrapped_line)));
+                }
+
+                lines.push(Line::from(""));
+
+                ListItem::new(lines)
+            })
+            .collect()
+    };
+
+    let reply_hint = match lang {
+        crate::i18n::Lang::Bg => "[r]-отговор [Esc]-назад",
+        crate::i18n::Lang::En => "[r]-reply [Esc]-back",
+    };
+
+    let title = format!(" {} {} ", subject, reply_hint);
+
+    let list = List::new(content)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(title));
+
+    frame.render_widget(list, messages_area);
+
+    // Draw input area if in reply mode
+    if let Some(input_rect) = input_area {
+        let input_title = match lang {
+            crate::i18n::Lang::Bg => " Отговор (Enter - изпрати, Esc - отказ) ",
+            crate::i18n::Lang::En => " Reply (Enter - send, Esc - cancel) ",
+        };
+
+        // Show cursor position
+        let cursor_x = input_rect.x + 1 + app.input_cursor as u16;
+        let cursor_y = input_rect.y + 1;
+
+        let input = Paragraph::new(app.input_buffer.as_str())
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green))
+                .title(input_title));
+
+        frame.render_widget(input, input_rect);
+
+        // Set cursor position
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+fn draw_compose(frame: &mut Frame, app: &App, area: Rect) {
+    let lang = app.lang;
+
+    // Split area: recipients list (left), compose fields (right)
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(40),  // Recipients
+            Constraint::Percentage(60),  // Subject & Body
+        ])
+        .split(area);
+
+    // Draw recipients list
+    let recipients_title = match lang {
+        crate::i18n::Lang::Bg => " Получатели (Space - избери, S - напред) ",
+        crate::i18n::Lang::En => " Recipients (Space - select, S - next) ",
+    };
+
+    let recipient_items: Vec<ListItem> = if app.recipients.is_empty() {
+        vec![ListItem::new(format!("  {}", T::loading(lang)))]
+    } else {
+        app.recipients
+            .iter()
+            .enumerate()
+            .map(|(idx, r)| {
+                let is_selected = app.selected_recipients.contains(&r.id);
+                let is_current = idx == app.list_offset;
+
+                let marker = if is_selected { "[✓] " } else { "[ ] " };
+                let cursor = if is_current { "▸ " } else { "  " };
+
+                let style = if is_selected {
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                } else if is_current {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                };
+
+                ListItem::new(format!("{}{}{}", cursor, marker, r.name)).style(style)
+            })
+            .collect()
+    };
+
+    let recipients_list = List::new(recipient_items)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(if app.input_mode == InputMode::Normal {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            })
+            .title(recipients_title));
+
+    frame.render_widget(recipients_list, chunks[0]);
+
+    // Draw compose fields
+    let compose_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Subject
+            Constraint::Min(5),     // Body
+        ])
+        .split(chunks[1]);
+
+    // Subject field
+    let subject_title = match lang {
+        crate::i18n::Lang::Bg => " Тема ",
+        crate::i18n::Lang::En => " Subject ",
+    };
+
+    let subject_text = if app.input_mode == InputMode::ComposeSubject {
+        app.input_buffer.as_str()
+    } else {
+        app.compose_subject.as_str()
+    };
+
+    let subject_style = if app.input_mode == InputMode::ComposeSubject {
+        Style::default().fg(Color::Yellow)
+    } else if !app.compose_subject.is_empty() {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default()
+    };
+
+    let subject = Paragraph::new(subject_text)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(subject_style)
+            .title(subject_title));
+
+    frame.render_widget(subject, compose_chunks[0]);
+
+    // Body field
+    let body_title = match lang {
+        crate::i18n::Lang::Bg => " Съобщение (Enter - изпрати) ",
+        crate::i18n::Lang::En => " Message (Enter - send) ",
+    };
+
+    let body_text = if app.input_mode == InputMode::ComposeBody {
+        app.input_buffer.as_str()
+    } else {
+        ""
+    };
+
+    let body_style = if app.input_mode == InputMode::ComposeBody {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
+    let body = Paragraph::new(body_text)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(body_style)
+            .title(body_title));
+
+    frame.render_widget(body, compose_chunks[1]);
+
+    // Set cursor position if in input mode
+    if app.input_mode == InputMode::ComposeSubject {
+        let cursor_x = compose_chunks[0].x + 1 + app.input_cursor as u16;
+        let cursor_y = compose_chunks[0].y + 1;
+        frame.set_cursor_position((cursor_x, cursor_y));
+    } else if app.input_mode == InputMode::ComposeBody {
+        let cursor_x = compose_chunks[1].x + 1 + app.input_cursor as u16;
+        let cursor_y = compose_chunks[1].y + 1;
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
@@ -1279,10 +1596,15 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
-    let status = if let Some(ref msg) = app.status_message {
+
+    // Show spinner when loading
+    let status = if app.loading {
+        let spinner_idx = app.tick % SPINNER_FRAMES.len();
+        let spinner = SPINNER_FRAMES[spinner_idx];
+        let msg = app.status_message.as_deref().unwrap_or(T::loading(lang));
+        format!("{} {}", spinner, msg)
+    } else if let Some(ref msg) = app.status_message {
         msg.clone()
-    } else if app.loading {
-        T::loading(lang).to_string()
     } else {
         "".to_string()
     };
