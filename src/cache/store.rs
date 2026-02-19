@@ -1,30 +1,17 @@
 use anyhow::Result;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 
 use crate::models::*;
 
 const DEFAULT_TTL_SECONDS: i64 = 3600; // 1 hour
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheMeta {
-    pub timestamps: HashMap<String, i64>,
-}
-
-impl Default for CacheMeta {
-    fn default() -> Self {
-        Self {
-            timestamps: HashMap::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UiConfig {
     pub students_pane_width: Option<u16>,
+    pub overview_split_percent: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +57,7 @@ impl<T> CachedData<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CacheStore {
     cache_dir: PathBuf,
     ttl_seconds: i64,
@@ -86,10 +73,6 @@ impl CacheStore {
             cache_dir,
             ttl_seconds: ttl_seconds.unwrap_or(DEFAULT_TTL_SECONDS),
         })
-    }
-
-    pub fn config_dir() -> PathBuf {
-        dirs_home().join(".shkolo")
     }
 
     pub fn cache_dir(&self) -> &PathBuf {

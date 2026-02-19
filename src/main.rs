@@ -7,20 +7,38 @@ mod tui;
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{self, Event, MouseEvent, MouseEventKind, EnableMouseCapture, DisableMouseCapture},
+    event::{Event, EventStream, MouseEventKind, EnableMouseCapture, DisableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use futures::StreamExt;
 use ratatui::prelude::*;
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::time::Duration;
 use time::OffsetDateTime;
+use std::pin::Pin;
+use std::future::Future;
 
 use api::ShkoloClient;
 use cache::CacheStore;
 use models::*;
-use tui::{App, draw, handle_key, handlers::Action};
+use tui::{App, draw, handle_key, handlers::Action, app::{ClickResult, StudentData}};
+
+/// Result of a background refresh operation
+enum BackgroundResult {
+    /// Full data refresh completed
+    DataRefresh {
+        students: Vec<StudentData>,
+        notifications: Vec<Notification>,
+        messages: Vec<MessageThread>,
+    },
+    /// Schedule-only refresh completed
+    ScheduleRefresh {
+        student_id: i64,
+        date: String,
+        schedule: Vec<ScheduleHour>,
+    },
+}
 
 const IOS_APP_STORAGE: &str = "Library/Containers/DD1CC5D9-F40E-415C-8E47-094321279222/Data/Library/Application Support/com.shkolo.mobileapp/RCTAsyncLocalStorage_V1/manifest.json";
 
@@ -132,14 +150,35 @@ enum JsonCommands {
     /// Get summary for all students
     Summary,
 
-    /// Get absences (testing endpoint)
+    /// Get absences
     Absences {
         /// Student name or index (optional, defaults to first)
         student: Option<String>,
     },
 
-    /// Try messages endpoints (discovery)
+    /// Get feedbacks (badges/remarks)
+    Feedbacks {
+        /// Student name or index (optional, defaults to first)
+        student: Option<String>,
+    },
+
+    /// Get notifications
+    Notifications,
+
+    /// Get messages
     Messages,
+
+    /// Get a specific message thread (for debugging)
+    Thread {
+        /// Thread ID
+        thread_id: i64,
+    },
+
+    /// Get raw feedbacks data (for debugging)
+    FeedbacksRaw {
+        /// Student name or index (optional, defaults to first)
+        student: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -284,12 +323,65 @@ async fn run_json_command(
             let (students, _, _) = get_students(&client, cache, force_refresh || no_cache).await?;
             let selected = select_students(&students, student.as_deref());
 
-            if let Some(s) = selected.first() {
-                let response = client.get_absences(s.id).await?;
-                output_json(&api::ApiResponse::new(response, false, None), format)?;
-            } else {
-                output_json(&api::ApiResponse::new(serde_json::json!({"error": "No student found"}), false, None), format)?;
+            let mut all_absences = Vec::new();
+            let mut any_cached = false;
+            let mut oldest_cache: Option<String> = None;
+
+            for s in selected {
+                let (absences, cached, cached_at) = get_absences(&client, cache, s.id, force_refresh || no_cache).await?;
+                if cached {
+                    any_cached = true;
+                    if oldest_cache.is_none() {
+                        oldest_cache = cached_at;
+                    }
+                }
+                all_absences.push(serde_json::json!({
+                    "student": s,
+                    "absences": absences,
+                    "total": absences.len(),
+                    "excused": absences.iter().filter(|a| a.is_excused).count(),
+                    "unexcused": absences.iter().filter(|a| !a.is_excused).count(),
+                }));
             }
+
+            output_json(&api::ApiResponse::new(all_absences, any_cached && !no_cache, oldest_cache), format)?;
+        }
+        JsonCommands::Feedbacks { student } => {
+            let (students, _, _) = get_students(&client, cache, force_refresh || no_cache).await?;
+            let selected = select_students(&students, student.as_deref());
+
+            let mut all_feedbacks = Vec::new();
+            let mut any_cached = false;
+            let mut oldest_cache: Option<String> = None;
+
+            for s in selected {
+                let (feedbacks, cached, cached_at) = get_feedbacks(&client, cache, s.id, force_refresh || no_cache).await?;
+                if cached {
+                    any_cached = true;
+                    if oldest_cache.is_none() {
+                        oldest_cache = cached_at;
+                    }
+                }
+                all_feedbacks.push(serde_json::json!({
+                    "student": s,
+                    "feedbacks": feedbacks,
+                    "total": feedbacks.len(),
+                    "positive": feedbacks.iter().filter(|f| f.is_positive).count(),
+                    "negative": feedbacks.iter().filter(|f| !f.is_positive).count(),
+                }));
+            }
+
+            output_json(&api::ApiResponse::new(all_feedbacks, any_cached && !no_cache, oldest_cache), format)?;
+        }
+        JsonCommands::Notifications => {
+            let (notifications, cached, cached_at) = get_notifications(&client, cache, force_refresh || no_cache).await?;
+
+            let unread = notifications.iter().filter(|n| !n.is_read).count();
+            output_json(&api::ApiResponse::new(serde_json::json!({
+                "notifications": notifications,
+                "total": notifications.len(),
+                "unread": unread,
+            }), cached && !no_cache, cached_at), format)?;
         }
         JsonCommands::Messages => {
             // Use the correct messenger API
@@ -314,6 +406,34 @@ async fn run_json_command(
             }
 
             output_json(&api::ApiResponse::new(results, false, None), format)?;
+        }
+        JsonCommands::Thread { thread_id } => {
+            // Get raw thread data for debugging
+            match client.get_thread_raw(thread_id).await {
+                Ok(data) => output_json(&api::ApiResponse::new(data, false, None), format)?,
+                Err(e) => output_json(&api::ApiResponse::new(serde_json::json!({
+                    "error": e.to_string(),
+                    "thread_id": thread_id,
+                }), false, None), format)?,
+            }
+        }
+        JsonCommands::FeedbacksRaw { student } => {
+            let (students, _, _) = get_students(&client, cache, force_refresh || no_cache).await?;
+            let selected = select_students(&students, student.as_deref());
+
+            if let Some(s) = selected.first() {
+                match client.get_feedbacks_raw(s.id).await {
+                    Ok(data) => output_json(&api::ApiResponse::new(data, false, None), format)?,
+                    Err(e) => output_json(&api::ApiResponse::new(serde_json::json!({
+                        "error": e.to_string(),
+                        "student_id": s.id,
+                    }), false, None), format)?,
+                }
+            } else {
+                output_json(&api::ApiResponse::new(serde_json::json!({
+                    "error": "No students found",
+                }), false, None), format)?;
+            }
         }
     }
 
@@ -356,6 +476,9 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
     if let Some(width) = ui_config.students_pane_width {
         app.students_pane_width = width;
     }
+    if let Some(percent) = ui_config.overview_split_percent {
+        app.overview_split_percent = percent;
+    }
 
     // Load cached data first
     app.load_from_cache(cache).await;
@@ -372,8 +495,13 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
         }
     }
 
-    // Main loop - resource-efficient event handling
+    // Main loop - async event handling with background refresh
     let mut last_time_update = std::time::Instant::now();
+    let mut event_stream = EventStream::new();
+
+    // Type alias for background task
+    type BackgroundTask = Pin<Box<dyn Future<Output = Result<BackgroundResult>> + Send>>;
+    let mut background_task: Option<BackgroundTask> = None;
 
     loop {
         // Update time periodically for schedule highlighting (once per minute is enough)
@@ -389,160 +517,333 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
         terminal.draw(|f| draw(f, &app))?;
 
-        // Determine poll timeout based on loading state
-        let poll_timeout = if app.loading {
-            // Fast polling during loading for spinner animation
-            Duration::from_millis(100)
-        } else {
-            // Block for up to 60 seconds when idle - minimal CPU usage
-            Duration::from_secs(60)
-        };
+        // Use tokio::select! to handle events and background tasks concurrently
+        let tick_delay = tokio::time::sleep(Duration::from_millis(if app.loading { 100 } else { 1000 }));
 
-        if event::poll(poll_timeout)? {
-            match event::read()? {
-                Event::Key(key) => match handle_key(&mut app, key) {
-                    Action::Refresh => {
-                        // Show loading state before starting refresh
-                        app.loading = true;
-                        app.set_status("Refreshing...");
-                        terminal.draw(|f| draw(f, &app))?;
+        tokio::select! {
+            // Handle background task completion
+            result = async {
+                match &mut background_task {
+                    Some(task) => Some(task.await),
+                    None => {
+                        std::future::pending::<()>().await;
+                        None
+                    }
+                }
+            } => {
+                background_task = None;
+                app.loading = false;
 
-                        if let Err(e) = app.refresh_data(&client, cache, false).await {
-                            app.set_status(format!("Error: {}", e));
+                if let Some(Ok(bg_result)) = result {
+                    match bg_result {
+                        BackgroundResult::DataRefresh { students, notifications, messages } => {
+                            app.students = students;
+                            app.notifications = notifications;
+                            app.messages = messages;
+                            app.set_status("Refreshed");
+                        }
+                        BackgroundResult::ScheduleRefresh { student_id, date, schedule } => {
+                            // Update schedule for the specific student
+                            if let Some(student_data) = app.students.iter_mut().find(|s| s.student.id == student_id) {
+                                student_data.schedule = schedule;
+                            }
+                            app.set_status(format!("Loaded {}", date));
                         }
                     }
-                    Action::RefreshAll => {
-                        // Show loading state before starting refresh
-                        app.loading = true;
-                        app.set_status("Refreshing all...");
-                        terminal.draw(|f| draw(f, &app))?;
+                } else if let Some(Err(e)) = result {
+                    app.set_status(format!("Error: {}", e));
+                }
+            }
 
-                        if let Err(e) = app.refresh_data(&client, cache, true).await {
-                            app.set_status(format!("Error: {}", e));
-                        }
-                    }
-                    Action::RefreshSchedule => {
-                        // Refresh schedule for the current schedule_date
-                        app.loading = true;
-                        app.set_status(format!("Loading schedule for {}...", app.schedule_date));
-                        terminal.draw(|f| draw(f, &app))?;
+            // Tick for animation
+            _ = tick_delay => {}
 
-                        if let Err(e) = app.refresh_schedule(&client, cache).await {
-                            app.set_status(format!("Error: {}", e));
-                        } else {
-                            app.set_status(format!("Schedule: {}", app.schedule_date));
-                        }
-                    }
-                    Action::Logout => {
-                        // Clear token and exit
-                        if let Err(e) = cache.clear_token() {
-                            app.set_status(format!("Logout error: {}", e));
-                        } else {
-                            app.set_status("Logged out. Restart to log in again.");
-                            app.user_name = None;
-                            // Exit after logout
-                            app.quit();
-                        }
-                    }
-                    Action::LoginPassword => {
-                        // Temporarily exit raw mode for interactive login
-                        disable_raw_mode()?;
-                        execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+            // Handle terminal events
+            maybe_event = event_stream.next() => {
+                if let Some(Ok(event)) = maybe_event {
+                    match event {
+                        Event::Key(key) => {
+                            let action = handle_key(&mut app, key);
+                            match action {
+                                Action::Refresh if background_task.is_none() => {
+                                    app.loading = true;
+                                    app.set_status("Refreshing...");
+                                    let client_clone = client.clone();
+                                    let cache_clone = cache.clone();
+                                    let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
+                                    background_task = Some(Box::pin(async move {
+                                        refresh_data_background(&client_clone, &cache_clone, false, student_ids).await
+                                    }));
+                                }
+                                Action::RefreshAll if background_task.is_none() => {
+                                    app.loading = true;
+                                    app.set_status("Refreshing all...");
+                                    let client_clone = client.clone();
+                                    let cache_clone = cache.clone();
+                                    let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
+                                    background_task = Some(Box::pin(async move {
+                                        refresh_data_background(&client_clone, &cache_clone, true, student_ids).await
+                                    }));
+                                }
+                                Action::RefreshSchedule if background_task.is_none() => {
+                                    app.loading = true;
+                                    let schedule_date = app.schedule_date.clone();
+                                    let student_id = app.current_student().map(|s| s.student.id);
+                                    app.set_status(format!("Loading {}...", schedule_date));
+                                    if let Some(sid) = student_id {
+                                        let client_clone = client.clone();
+                                        let cache_clone = cache.clone();
+                                        background_task = Some(Box::pin(async move {
+                                            refresh_schedule_background(&client_clone, &cache_clone, sid, &schedule_date).await
+                                        }));
+                                    }
+                                }
+                                Action::Logout => {
+                                    // Clear token and exit
+                                    if let Err(e) = cache.clear_token() {
+                                        app.set_status(format!("Logout error: {}", e));
+                                    } else {
+                                        app.set_status("Logged out. Restart to log in again.");
+                                        app.user_name = None;
+                                        // Exit after logout
+                                        app.quit();
+                                    }
+                                }
+                                Action::LoginPassword => {
+                                    // Temporarily exit raw mode for interactive login
+                                    disable_raw_mode()?;
+                                    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
-                        println!("Login with username/password:");
-                        if let Err(e) = login(cache, None, None).await {
-                            eprintln!("Login failed: {}", e);
-                            eprintln!("Press Enter to continue...");
-                            let mut input = String::new();
-                            let _ = io::stdin().read_line(&mut input);
-                        } else {
-                            println!("Press Enter to continue...");
-                            let mut input = String::new();
-                            let _ = io::stdin().read_line(&mut input);
-                        }
+                                    println!("Login with username/password:");
+                                    if let Err(e) = login(cache, None, None).await {
+                                        eprintln!("Login failed: {}", e);
+                                        eprintln!("Press Enter to continue...");
+                                        let mut input = String::new();
+                                        let _ = io::stdin().read_line(&mut input);
+                                    } else {
+                                        println!("Press Enter to continue...");
+                                        let mut input = String::new();
+                                        let _ = io::stdin().read_line(&mut input);
+                                    }
 
-                        // Re-enter TUI mode
-                        enable_raw_mode()?;
-                        execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                                    // Re-enter TUI mode
+                                    enable_raw_mode()?;
+                                    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
 
-                        // Reload token and refresh data
-                        if let Ok(token_data) = cache.load_token() {
-                            client = ShkoloClient::with_token(token_data.token, token_data.school_year);
-                            if let Some(data) = token_data.user_data {
-                                if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
-                                    app.user_name = Some(names.to_string());
-                                } else if let Some(users) = data.get("users").and_then(|v: &serde_json::Value| v.as_array()) {
-                                    if let Some(first) = users.first() {
-                                        if let Some(names) = first.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
-                                            app.user_name = Some(names.to_string());
+                                    // Reload token and refresh data
+                                    if let Ok(token_data) = cache.load_token() {
+                                        client = ShkoloClient::with_token(token_data.token, token_data.school_year);
+                                        if let Some(data) = token_data.user_data {
+                                            if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
+                                                app.user_name = Some(names.to_string());
+                                            } else if let Some(users) = data.get("users").and_then(|v: &serde_json::Value| v.as_array()) {
+                                                if let Some(first) = users.first() {
+                                                    if let Some(names) = first.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
+                                                        app.user_name = Some(names.to_string());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        app.loading = true;
+                                        app.set_status("Loading data...");
+                                        terminal.draw(|f| draw(f, &app))?;
+                                        if let Err(e) = app.refresh_data(&client, cache, true).await {
+                                            app.set_status(format!("Error: {}", e));
                                         }
                                     }
                                 }
-                            }
-                            app.loading = true;
-                            app.set_status("Loading data...");
-                            terminal.draw(|f| draw(f, &app))?;
-                            if let Err(e) = app.refresh_data(&client, cache, true).await {
-                                app.set_status(format!("Error: {}", e));
-                            }
-                        }
-                    }
-                    Action::LoginGoogle => {
-                        // Google login requires browser - show message
-                        app.set_status("Google login not yet implemented in TUI");
-                    }
-                    Action::ImportToken => {
-                        // Temporarily exit raw mode for import output
-                        disable_raw_mode()?;
-                        execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+                                Action::LoginGoogle => {
+                                    // Google login requires browser - show message
+                                    app.set_status("Google login not yet implemented in TUI");
+                                }
+                                Action::ImportToken => {
+                                    // Temporarily exit raw mode for import output
+                                    disable_raw_mode()?;
+                                    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
 
-                        if let Err(e) = import_token(cache) {
-                            eprintln!("Import failed: {}", e);
-                        }
-                        println!("\nPress Enter to continue...");
-                        let mut input = String::new();
-                        let _ = io::stdin().read_line(&mut input);
+                                    if let Err(e) = import_token(cache) {
+                                        eprintln!("Import failed: {}", e);
+                                    }
+                                    println!("\nPress Enter to continue...");
+                                    let mut input = String::new();
+                                    let _ = io::stdin().read_line(&mut input);
 
-                        // Re-enter TUI mode
-                        enable_raw_mode()?;
-                        execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                                    // Re-enter TUI mode
+                                    enable_raw_mode()?;
+                                    execute!(terminal.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
 
-                        // Reload token and refresh data
-                        if let Ok(token_data) = cache.load_token() {
-                            client = ShkoloClient::with_token(token_data.token, token_data.school_year);
-                            if let Some(data) = token_data.user_data {
-                                if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
-                                    app.user_name = Some(names.to_string());
+                                    // Reload token and refresh data
+                                    if let Ok(token_data) = cache.load_token() {
+                                        client = ShkoloClient::with_token(token_data.token, token_data.school_year);
+                                        if let Some(data) = token_data.user_data {
+                                            if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
+                                                app.user_name = Some(names.to_string());
+                                            }
+                                        }
+                                        app.loading = true;
+                                        app.set_status("Loading data...");
+                                        terminal.draw(|f| draw(f, &app))?;
+                                        if let Err(e) = app.refresh_data(&client, cache, true).await {
+                                            app.set_status(format!("Error: {}", e));
+                                        }
+                                    }
+                                }
+                                Action::OpenThread(thread_id) => {
+                                    // Load thread messages
+                                    app.loading = true;
+                                    app.set_status("Loading thread...");
+                                    terminal.draw(|f| draw(f, &app))?;
+
+                                    match client.get_thread_messages(thread_id).await {
+                                        Ok(messages) => {
+                                            app.thread_messages = messages;
+                                            app.loading = false;
+                                            app.clear_status();
+                                        }
+                                        Err(e) => {
+                                            app.set_error(format!("Failed to load thread:\n{}", e));
+                                            app.loading = false;
+                                            app.close_thread();
+                                        }
+                                    }
+                                }
+                                Action::CloseThread => {
+                                    // Already handled in app.close_thread()
+                                }
+                                Action::SendReply(message) => {
+                                    if let Some(thread_id) = app.selected_thread_id {
+                                        app.loading = true;
+                                        app.set_status("Sending...");
+                                        terminal.draw(|f| draw(f, &app))?;
+
+                                        match client.reply_to_thread(thread_id, &message).await {
+                                            Ok(_) => {
+                                                // Reload thread messages
+                                                match client.get_thread_messages(thread_id).await {
+                                                    Ok(messages) => {
+                                                        app.thread_messages = messages;
+                                                        app.set_status("Message sent!");
+                                                    }
+                                                    Err(e) => {
+                                                        app.set_status(format!("Sent, but reload failed: {}", e));
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                app.set_status(format!("Send failed: {}", e));
+                                            }
+                                        }
+                                        app.loading = false;
+                                    }
+                                }
+                                Action::StartCompose => {
+                                    // Fetch recipients
+                                    app.loading = true;
+                                    app.set_status("Loading recipients...");
+                                    terminal.draw(|f| draw(f, &app))?;
+
+                                    match client.get_recipients().await {
+                                        Ok(recipients) => {
+                                            app.recipients = recipients;
+                                            app.loading = false;
+                                            app.clear_status();
+                                        }
+                                        Err(e) => {
+                                            app.set_status(format!("Error: {}", e));
+                                            app.loading = false;
+                                            app.cancel_compose();
+                                        }
+                                    }
+                                }
+                                Action::SendCompose { subject, body, recipients } => {
+                                    app.loading = true;
+                                    app.set_status("Sending message...");
+                                    terminal.draw(|f| draw(f, &app))?;
+
+                                    match client.create_thread(&recipients, &subject, &body).await {
+                                        Ok(_) => {
+                                            app.set_status("Message sent!");
+                                            // Refresh messages list
+                                            if let Ok(messages) = app.fetch_messages(&client).await {
+                                                app.messages = messages;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            app.set_status(format!("Send failed: {}", e));
+                                        }
+                                    }
+                                    app.loading = false;
+                                }
+                                Action::None => {}
+                                // These are handled by guards above (when background_task.is_none())
+                                // If we get here, a background task is already running
+                                Action::Refresh | Action::RefreshAll | Action::RefreshSchedule => {
+                                    // Already refreshing, ignore
                                 }
                             }
-                            app.loading = true;
-                            app.set_status("Loading data...");
-                            terminal.draw(|f| draw(f, &app))?;
-                            if let Err(e) = app.refresh_data(&client, cache, true).await {
-                                app.set_status(format!("Error: {}", e));
-                            }
                         }
-                    }
-                    Action::None => {}
-                },
-                Event::Mouse(mouse) => {
-                    // Handle mouse events for pane resizing
-                    // The pane border is at x = students_pane_width (after the 3-line header)
-                    let border_x = app.students_pane_width;
-                    match mouse.kind {
-                        MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
-                            // Only resize if dragging near the border (within 2 chars)
-                            if mouse.row >= 3 { // Skip header area
-                                let new_width = mouse.column.clamp(15, 60);
-                                app.students_pane_width = new_width;
+                        Event::Mouse(mouse) => {
+                            match mouse.kind {
+                                // Mouse scroll wheel
+                                MouseEventKind::ScrollUp => {
+                                    app.scroll_up();
+                                }
+                                MouseEventKind::ScrollDown => {
+                                    app.scroll_down();
+                                }
+                                // Mouse click
+                                MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                    // Tab bar is at rows 0-2 (3-line header with border)
+                                    if mouse.row <= 2 {
+                                        app.click_tab(mouse.column);
+                                    }
+                                    // Content area starts at row 3
+                                    else if mouse.row >= 3 {
+                                        // Check if click is in content area (not status bar)
+                                        let terminal_height = terminal.size()?.height;
+                                        if mouse.row < terminal_height.saturating_sub(3) {
+                                            let click_result = app.click_list_item(mouse.row, 3, mouse.column, app.students_pane_width);
+                                            match click_result {
+                                                ClickResult::ActivateNotification => {
+                                                    app.activate_notification();
+                                                }
+                                                ClickResult::ActivateMessage => {
+                                                    if let Some(thread_id) = app.open_thread() {
+                                                        // Load thread messages
+                                                        app.set_status("Loading thread...");
+                                                        match client.get_thread_messages(thread_id).await {
+                                                            Ok(messages) => {
+                                                                app.thread_messages = messages;
+                                                                app.clear_status();
+                                                            }
+                                                            Err(e) => {
+                                                                app.set_error(format!("Failed to load thread:\n{}", e));
+                                                                app.close_thread();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                                // Drag for pane resizing
+                                MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                                    // Only resize if dragging in content area (row >= 3)
+                                    if mouse.row >= 3 {
+                                        let new_width = mouse.column.clamp(15, 60);
+                                        app.students_pane_width = new_width;
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                         _ => {}
                     }
                 }
-                _ => {}
             }
-        }
+        } // end tokio::select!
 
         if !app.running {
             break;
@@ -552,6 +853,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
     // Save UI configuration (pane sizes)
     let ui_config = cache::UiConfig {
         students_pane_width: Some(app.students_pane_width),
+        overview_split_percent: Some(app.overview_split_percent),
     };
     let _ = cache.save_ui_config(&ui_config);
 
@@ -985,6 +1287,103 @@ async fn get_schedule(
     Ok((schedule, false, None))
 }
 
+async fn get_absences(
+    client: &ShkoloClient,
+    cache: &CacheStore,
+    student_id: i64,
+    force_refresh: bool,
+) -> Result<(Vec<Absence>, bool, Option<String>)> {
+    // Check cache first
+    if !force_refresh {
+        if let Some((absences, age, expired)) = cache.get_absences(student_id) {
+            if !expired {
+                return Ok((absences, true, Some(age)));
+            }
+        }
+    }
+
+    // Fetch from API
+    let response = client.get_absences(student_id).await?;
+
+    let mut absences: Vec<Absence> = response.absences
+        .unwrap_or_default()
+        .iter()
+        .map(Absence::from_raw)
+        .collect();
+
+    // Sort by date (newest first)
+    absences.sort_by(|a, b| {
+        b.date_sort.cmp(&a.date_sort)
+            .then_with(|| a.hour.cmp(&b.hour))
+    });
+
+    cache.save_absences(student_id, &absences)?;
+
+    Ok((absences, false, None))
+}
+
+async fn get_feedbacks(
+    client: &ShkoloClient,
+    cache: &CacheStore,
+    student_id: i64,
+    force_refresh: bool,
+) -> Result<(Vec<Feedback>, bool, Option<String>)> {
+    // Check cache first
+    if !force_refresh {
+        if let Some((feedbacks, age, expired)) = cache.get_feedbacks(student_id) {
+            if !expired {
+                return Ok((feedbacks, true, Some(age)));
+            }
+        }
+    }
+
+    // Fetch from API
+    let response = client.get_feedbacks(student_id).await?;
+
+    let mut feedbacks: Vec<Feedback> = response.data
+        .or(response.feedbacks)
+        .unwrap_or_default()
+        .iter()
+        .map(Feedback::from_raw)
+        .collect();
+
+    // Sort by date (newest first)
+    feedbacks.sort_by(|a, b| b.date.cmp(&a.date));
+
+    cache.save_feedbacks(student_id, &feedbacks)?;
+
+    Ok((feedbacks, false, None))
+}
+
+async fn get_notifications(
+    client: &ShkoloClient,
+    cache: &CacheStore,
+    force_refresh: bool,
+) -> Result<(Vec<Notification>, bool, Option<String>)> {
+    // Check cache first
+    if !force_refresh {
+        if let Some((notifications, age, expired)) = cache.get_notifications() {
+            if !expired {
+                return Ok((notifications, true, Some(age)));
+            }
+        }
+    }
+
+    // Fetch from API
+    let response = client.get_notifications(1).await?;
+
+    let notifications: Vec<Notification> = response.data
+        .or(response.notifications)
+        .unwrap_or_default()
+        .iter()
+        .map(Notification::from_raw)
+        .collect();
+
+    cache.save_notifications(&notifications)?;
+
+    Ok((notifications, false, None))
+}
+
 fn select_students<'a>(students: &'a [Student], selector: Option<&str>) -> Vec<&'a Student> {
     match selector {
         None => students.iter().collect(),
@@ -1036,4 +1435,75 @@ mod dirs {
 fn get_today_date() -> String {
     let now = OffsetDateTime::now_utc();
     format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day())
+}
+
+/// Refresh all data in the background and return the result
+async fn refresh_data_background(
+    client: &ShkoloClient,
+    cache: &CacheStore,
+    force_refresh: bool,
+    _student_ids: Vec<i64>,
+) -> Result<BackgroundResult> {
+    // Fetch students
+    let (students, _, _) = get_students(client, cache, force_refresh).await?;
+
+    // Fetch data for each student
+    let mut student_data_list = Vec::new();
+    let today = get_today_date();
+
+    for student in students {
+        let (homework, _, hw_age) = get_homework(client, cache, student.id, force_refresh).await?;
+        let (grades, _, grades_age) = get_grades(client, cache, student.id, force_refresh).await?;
+        let (absences, _, absences_age) = get_absences(client, cache, student.id, force_refresh).await?;
+        let (feedbacks, _, feedbacks_age) = get_feedbacks(client, cache, student.id, force_refresh).await?;
+
+        // Get schedule - use today for background refresh
+        let (schedule, _, schedule_age) = get_schedule(client, cache, student.id, &today, force_refresh).await?;
+
+        student_data_list.push(StudentData {
+            student,
+            homework,
+            grades,
+            schedule,
+            events: Vec::new(), // TODO: fetch events
+            absences,
+            feedbacks,
+            homework_age: hw_age,
+            grades_age,
+            schedule_age,
+            absences_age,
+            feedbacks_age,
+        });
+    }
+
+    // Fetch notifications
+    let (notifications, _, _) = get_notifications(client, cache, force_refresh).await?;
+
+    // Fetch messages
+    let messages: Vec<MessageThread> = match client.get_messenger_threads(None).await {
+        Ok(raw_threads) => raw_threads.iter().map(MessageThread::from_raw).collect(),
+        Err(_) => Vec::new(),
+    };
+
+    Ok(BackgroundResult::DataRefresh {
+        students: student_data_list,
+        notifications,
+        messages,
+    })
+}
+
+/// Refresh schedule for a specific student/date in the background
+async fn refresh_schedule_background(
+    client: &ShkoloClient,
+    cache: &CacheStore,
+    student_id: i64,
+    date: &str,
+) -> Result<BackgroundResult> {
+    let (schedule, _, _) = get_schedule(client, cache, student_id, date, true).await?;
+
+    Ok(BackgroundResult::ScheduleRefresh {
+        student_id,
+        date: date.to_string(),
+        schedule,
+    })
 }

@@ -21,7 +21,7 @@ time = { version = "0.3", features = ["serde", "formatting", "macros", "local-of
 
 # TUI
 ratatui = "0.28"
-crossterm = "0.27"
+crossterm = { version = "0.27", features = ["event-stream"] }
 
 # Config and paths
 directories = "5"
@@ -29,6 +29,9 @@ toml = "0.8"
 
 # CLI parsing
 clap = { version = "4", features = ["derive"] }
+
+# Async utilities
+futures = "0.3"
 
 # Error handling
 anyhow = "1"
