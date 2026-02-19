@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::i18n::Lang;
+use crate::i18n::{Lang, T};
 use super::app::{App, Focus, Tab, InputMode, MessageView};
 
 pub enum Action {
@@ -389,76 +389,77 @@ fn handle_thread_view(app: &mut App, key: KeyEvent) -> Action {
 /// Returns a list of (key, description) pairs
 /// This is defined here alongside the actual key handlers to keep them in sync
 pub fn get_keybindings(app: &App) -> Vec<(&'static str, &'static str)> {
+    let lang = app.lang;
     let mut bindings = Vec::new();
 
     // Always available
-    bindings.push(("?", "Show/hide this help"));
-    bindings.push(("Ctrl+C", "Quit immediately"));
+    bindings.push(("?", T::key_show_help(lang)));
 
     // Check for special modes first
     if app.input_mode != InputMode::Normal {
         // Input mode keybindings (see handle_input_mode)
-        bindings.push(("Esc", "Cancel input"));
-        bindings.push(("Enter", "Submit/next field"));
-        bindings.push(("Backspace", "Delete character"));
-        bindings.push(("←/→", "Move cursor"));
-        bindings.push(("Home/End", "Jump to start/end"));
+        bindings.push(("Esc", T::key_cancel_input(lang)));
+        bindings.push(("Enter", T::key_submit(lang)));
+        bindings.push(("Backspace", T::key_delete_char(lang)));
+        bindings.push(("←/→", T::key_move_cursor(lang)));
+        bindings.push(("Home/End", T::key_jump_start_end(lang)));
         if app.input_mode == InputMode::ComposeSubject {
-            bindings.push(("Tab", "Move to message body"));
+            bindings.push(("Tab", T::key_move_to_body(lang)));
         }
         return bindings;
     }
 
     // Message thread view (see handle_thread_view)
     if app.current_tab == Tab::Messages && app.message_view == MessageView::Thread {
-        bindings.push(("Esc / q", "Close thread"));
-        bindings.push(("r", "Reply to thread"));
-        bindings.push(("↓/j, ↑/k", "Scroll messages"));
+        bindings.push(("Esc/q", T::key_close_thread(lang)));
+        bindings.push(("r", T::key_reply(lang)));
+        bindings.push(("↓/j ↑/k", T::key_scroll(lang)));
         return bindings;
     }
 
     // Compose view - recipient selection (see handle_compose_view)
     if app.current_tab == Tab::Messages && app.message_view == MessageView::Compose {
-        bindings.push(("Esc", "Cancel compose"));
-        bindings.push(("↓/j, ↑/k", "Navigate recipients"));
-        bindings.push(("Enter / Space", "Toggle recipient"));
-        bindings.push(("s", "Start writing subject"));
+        bindings.push(("Esc", T::key_cancel_compose(lang)));
+        bindings.push(("↓/j ↑/k", T::key_navigate(lang)));
+        bindings.push(("Enter/Space", T::key_toggle_recipient(lang)));
+        bindings.push(("s", T::key_start_subject(lang)));
         return bindings;
     }
 
     // Normal mode - common bindings (see handle_key)
-    bindings.push(("q / Esc", "Quit"));
-    bindings.push(("←/h/{, →/l/}", "Switch tabs"));
-    bindings.push(("Tab", "Toggle focus (students/content)"));
-    bindings.push(("↓/j, ↑/k", "Navigate list / Scroll"));
-    bindings.push(("1-5", "Quick select student"));
-    bindings.push(("r", "Refresh data"));
-    bindings.push(("R", "Force refresh all"));
-    bindings.push(("G", "Toggle language (BG/EN)"));
-    bindings.push(("[-/[, +/]/=", "Resize students pane"));
+    // q/Esc/Ctrl+C all quit - consolidated into one entry
+    bindings.push(("q/Esc/^C", T::key_quit(lang)));
+    bindings.push(("←/h/{ →/l/}", T::key_switch_tabs(lang)));
+    bindings.push(("Tab", T::key_toggle_focus(lang)));
+    bindings.push(("↓/j ↑/k", T::key_navigate_scroll(lang)));
+    bindings.push(("1-5", T::key_quick_select_student(lang)));
+    bindings.push(("r", T::key_refresh(lang)));
+    bindings.push(("R", T::key_force_refresh(lang)));
+    bindings.push(("G", T::key_toggle_lang(lang)));
+    bindings.push(("-/[ +/]/=", T::key_resize_pane(lang)));
 
     // Tab-specific bindings
     match app.current_tab {
         Tab::Overview => {
-            bindings.push(("</>", "Resize overview split"));
+            bindings.push(("</>", T::key_resize_split(lang)));
         }
         Tab::Schedule => {
-            bindings.push(("p", "Previous day"));
-            bindings.push(("n", "Next day"));
-            bindings.push(("t", "Go to today"));
+            bindings.push(("p", T::key_prev_day(lang)));
+            bindings.push(("n", T::key_next_day(lang)));
+            bindings.push(("t", T::key_go_today(lang)));
         }
         Tab::Notifications => {
-            bindings.push(("Enter", "Go to related tab"));
+            bindings.push(("Enter", T::key_go_to_tab(lang)));
         }
         Tab::Messages => {
-            bindings.push(("Enter", "Open thread"));
-            bindings.push(("c", "Compose new message"));
+            bindings.push(("Enter", T::key_open_thread(lang)));
+            bindings.push(("c", T::key_compose(lang)));
         }
         Tab::Settings => {
-            bindings.push(("L", "Logout"));
-            bindings.push(("1", "Login with password"));
-            bindings.push(("2", "Login with Google"));
-            bindings.push(("3", "Import token from iOS"));
+            bindings.push(("L", T::logout(lang)));
+            bindings.push(("1", T::key_login_password(lang)));
+            bindings.push(("2", T::key_login_google(lang)));
+            bindings.push(("3", T::key_import_token_ios(lang)));
         }
         _ => {}
     }

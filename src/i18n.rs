@@ -193,4 +193,128 @@ impl T {
         }
     }
 
+    // Keybinding descriptions
+    pub fn key_show_help(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Покажи/скрий помощ", Lang::En => "Show/hide help" }
+    }
+    pub fn key_quit(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Изход", Lang::En => "Quit" }
+    }
+    pub fn key_cancel_input(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Отказ", Lang::En => "Cancel input" }
+    }
+    pub fn key_submit(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Изпрати/напред", Lang::En => "Submit/next field" }
+    }
+    pub fn key_delete_char(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Изтрий символ", Lang::En => "Delete character" }
+    }
+    pub fn key_move_cursor(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Курсор ляво/дясно", Lang::En => "Move cursor" }
+    }
+    pub fn key_jump_start_end(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "В начало/края", Lang::En => "Jump to start/end" }
+    }
+    pub fn key_move_to_body(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Към текст", Lang::En => "Move to message body" }
+    }
+    pub fn key_close_thread(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Затвори", Lang::En => "Close thread" }
+    }
+    pub fn key_reply(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Отговор", Lang::En => "Reply to thread" }
+    }
+    pub fn key_scroll(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Превърти", Lang::En => "Scroll" }
+    }
+    pub fn key_cancel_compose(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Отказ", Lang::En => "Cancel compose" }
+    }
+    pub fn key_navigate(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Навигация", Lang::En => "Navigate" }
+    }
+    pub fn key_toggle_recipient(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Избери/премахни", Lang::En => "Toggle recipient" }
+    }
+    pub fn key_start_subject(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Напиши тема", Lang::En => "Start writing subject" }
+    }
+    pub fn key_switch_tabs(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Смени раздел", Lang::En => "Switch tabs" }
+    }
+    pub fn key_toggle_focus(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Смени фокус", Lang::En => "Toggle focus (students/content)" }
+    }
+    pub fn key_navigate_scroll(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Навигация / Превърти", Lang::En => "Navigate / Scroll" }
+    }
+    pub fn key_quick_select_student(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Бърз избор ученик", Lang::En => "Quick select student" }
+    }
+    pub fn key_refresh(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Обнови", Lang::En => "Refresh data" }
+    }
+    pub fn key_force_refresh(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Обнови всичко", Lang::En => "Force refresh all" }
+    }
+    pub fn key_toggle_lang(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Смени език (БГ/EN)", Lang::En => "Toggle language (BG/EN)" }
+    }
+    pub fn key_resize_pane(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Преоразмери панел", Lang::En => "Resize students pane" }
+    }
+    pub fn key_resize_split(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Преоразмери разделител", Lang::En => "Resize split" }
+    }
+    pub fn key_prev_day(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Предишен ден", Lang::En => "Previous day" }
+    }
+    pub fn key_next_day(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Следващ ден", Lang::En => "Next day" }
+    }
+    pub fn key_go_today(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Днес", Lang::En => "Go to today" }
+    }
+    pub fn key_go_to_tab(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Към свързан раздел", Lang::En => "Go to related tab" }
+    }
+    pub fn key_open_thread(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Отвори", Lang::En => "Open thread" }
+    }
+    pub fn key_compose(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Ново съобщение", Lang::En => "Compose new message" }
+    }
+    pub fn key_login_password(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Вход с парола", Lang::En => "Login with password" }
+    }
+    pub fn key_login_google(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Вход с Google", Lang::En => "Login with Google" }
+    }
+    pub fn key_import_token_ios(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Импорт от iOS", Lang::En => "Import token from iOS" }
+    }
+    pub fn keyboard_shortcuts(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Клавишни комбинации", Lang::En => "Keyboard Shortcuts" }
+    }
+    pub fn press_any_key(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Натисни клавиш", Lang::En => "Press any key" }
+    }
+
+    // Context descriptions for help overlay
+    pub fn ctx_replying(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Отговор", Lang::En => "Replying" }
+    }
+    pub fn ctx_composing_subject(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Тема", Lang::En => "Composing Subject" }
+    }
+    pub fn ctx_composing_body(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Съобщение", Lang::En => "Composing Message" }
+    }
+    pub fn ctx_thread_view(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Преглед нишка", Lang::En => "Thread View" }
+    }
+    pub fn ctx_select_recipients(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Избор получатели", Lang::En => "Select Recipients" }
+    }
+
 }

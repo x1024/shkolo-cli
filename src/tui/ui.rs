@@ -104,7 +104,10 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
 
     // Get context description
     let context = get_context_description(app);
-    let title = format!(" Keyboard Shortcuts ({}) [Press any key] ", context);
+    let title = format!(" {} ({}) [{}] ",
+        T::keyboard_shortcuts(app.lang),
+        context,
+        T::press_any_key(app.lang));
 
     let help_text = Paragraph::new(lines)
         .alignment(Alignment::Left)
@@ -120,33 +123,34 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
 
 /// Get a description of the current context for the help title
 fn get_context_description(app: &App) -> &'static str {
+    let lang = app.lang;
     if app.input_mode != InputMode::Normal {
         return match app.input_mode {
-            InputMode::Reply => "Replying",
-            InputMode::ComposeSubject => "Composing Subject",
-            InputMode::ComposeBody => "Composing Message",
-            InputMode::Normal => "Normal",
+            InputMode::Reply => T::ctx_replying(lang),
+            InputMode::ComposeSubject => T::ctx_composing_subject(lang),
+            InputMode::ComposeBody => T::ctx_composing_body(lang),
+            InputMode::Normal => T::overview(lang),
         };
     }
 
     if app.current_tab == Tab::Messages {
         return match app.message_view {
-            MessageView::Thread => "Thread View",
-            MessageView::Compose => "Select Recipients",
-            MessageView::List => "Messages",
+            MessageView::Thread => T::ctx_thread_view(lang),
+            MessageView::Compose => T::ctx_select_recipients(lang),
+            MessageView::List => T::messages(lang),
         };
     }
 
     match app.current_tab {
-        Tab::Overview => "Overview",
-        Tab::Schedule => "Schedule",
-        Tab::Homework => "Homework",
-        Tab::Grades => "Grades",
-        Tab::Absences => "Absences",
-        Tab::Feedbacks => "Feedbacks",
-        Tab::Notifications => "Notifications",
-        Tab::Messages => "Messages",
-        Tab::Settings => "Settings",
+        Tab::Overview => T::overview(lang),
+        Tab::Schedule => T::schedule(lang),
+        Tab::Homework => T::homework(lang),
+        Tab::Grades => T::grades(lang),
+        Tab::Absences => T::absences(lang),
+        Tab::Feedbacks => T::feedbacks(lang),
+        Tab::Notifications => T::notifications(lang),
+        Tab::Messages => T::messages(lang),
+        Tab::Settings => T::settings(lang),
     }
 }
 
