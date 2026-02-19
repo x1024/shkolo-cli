@@ -92,6 +92,17 @@ pub enum Focus {
     OverviewGrades,
 }
 
+/// Target for mouse drag resizing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DragTarget {
+    #[default]
+    None,
+    /// Vertical border between students pane and content
+    StudentsPaneWidth,
+    /// Horizontal border between schedule and homework/grades in overview
+    OverviewSplit,
+}
+
 #[derive(Debug, Clone)]
 pub struct StudentData {
     pub student: Student,
@@ -193,6 +204,8 @@ pub struct App {
     pub compose_subject: String,
     // Help overlay
     pub show_help: bool,
+    // Drag state for split resizing
+    pub drag_target: DragTarget,
 }
 
 impl App {
@@ -241,6 +254,8 @@ impl App {
             compose_subject: String::new(),
             // Help
             show_help: false,
+            // Drag state
+            drag_target: DragTarget::None,
         }
     }
 
@@ -278,6 +293,77 @@ impl App {
     pub fn resize_overview_split(&mut self, delta: i16) {
         let new_percent = (self.overview_split_percent as i16 + delta).clamp(20, 70) as u16;
         self.overview_split_percent = new_percent;
+    }
+
+    /// Start a drag operation if the mouse is near a resizable border
+    /// Returns true if a drag was started
+    ///
+    /// Layout info:
+    /// - header_height: rows taken by tabs (3)
+    /// - footer_height: rows taken by status bar (3)
+    /// - content_height: total height - header - footer
+    pub fn start_drag(&mut self, row: u16, column: u16, content_area: (u16, u16, u16, u16)) -> bool {
+        let (content_x, content_y, _content_width, content_height) = content_area;
+        let hit_zone = 2; // Pixels on either side of border to detect drag
+
+        // Check vertical border (students pane | content)
+        // Only for tabs that show the students pane
+        let has_students_pane = !matches!(self.current_tab, Tab::Notifications | Tab::Settings | Tab::Messages);
+        if has_students_pane {
+            let border_x = content_x + self.students_pane_width;
+            if column >= border_x.saturating_sub(hit_zone) && column <= border_x + hit_zone {
+                if row >= content_y && row < content_y + content_height {
+                    self.drag_target = DragTarget::StudentsPaneWidth;
+                    return true;
+                }
+            }
+        }
+
+        // Check horizontal border (overview split) - only on Overview tab
+        if self.current_tab == Tab::Overview && has_students_pane {
+            let content_start_x = content_x + self.students_pane_width;
+            // Only in the content area (right of students pane)
+            if column > content_start_x {
+                let split_row = content_y + (content_height as u32 * self.overview_split_percent as u32 / 100) as u16;
+                if row >= split_row.saturating_sub(hit_zone) && row <= split_row + hit_zone {
+                    self.drag_target = DragTarget::OverviewSplit;
+                    return true;
+                }
+            }
+        }
+
+        self.drag_target = DragTarget::None;
+        false
+    }
+
+    /// Update the dragged split based on current mouse position
+    pub fn update_drag(&mut self, row: u16, column: u16, content_area: (u16, u16, u16, u16)) {
+        let (content_x, content_y, _content_width, content_height) = content_area;
+
+        match self.drag_target {
+            DragTarget::None => {}
+            DragTarget::StudentsPaneWidth => {
+                // Column position relative to content area start
+                let new_width = column.saturating_sub(content_x).clamp(15, 60);
+                self.students_pane_width = new_width;
+            }
+            DragTarget::OverviewSplit => {
+                // Row position relative to content area, converted to percentage
+                let relative_row = row.saturating_sub(content_y);
+                let percent = ((relative_row as u32 * 100) / content_height.max(1) as u32) as u16;
+                self.overview_split_percent = percent.clamp(20, 70);
+            }
+        }
+    }
+
+    /// End the current drag operation
+    pub fn end_drag(&mut self) {
+        self.drag_target = DragTarget::None;
+    }
+
+    /// Check if currently dragging
+    pub fn is_dragging(&self) -> bool {
+        self.drag_target != DragTarget::None
     }
 
     pub fn tick(&mut self) {
@@ -1495,5 +1581,90 @@ mod tests {
         let result = app.open_thread_at(0);
         assert_eq!(result, Some(100));
         assert_eq!(app.selected_thread_id, Some(100));
+    }
+
+    #[test]
+    fn test_drag_students_pane() {
+        let mut app = App::new();
+        app.current_tab = Tab::Overview;
+        app.students_pane_width = 30;
+
+        // Content area: (x=0, y=3, width=100, height=40)
+        let content_area = (0u16, 3u16, 100u16, 40u16);
+
+        // Click near the vertical border (x=30, should be within hit zone of 2)
+        let started = app.start_drag(10, 31, content_area);
+        assert!(started);
+        assert_eq!(app.drag_target, DragTarget::StudentsPaneWidth);
+        assert!(app.is_dragging());
+
+        // Drag to new position (column 45)
+        app.update_drag(10, 45, content_area);
+        assert_eq!(app.students_pane_width, 45);
+
+        // End drag
+        app.end_drag();
+        assert_eq!(app.drag_target, DragTarget::None);
+        assert!(!app.is_dragging());
+    }
+
+    #[test]
+    fn test_drag_overview_split() {
+        let mut app = App::new();
+        app.current_tab = Tab::Overview;
+        app.students_pane_width = 30;
+        app.overview_split_percent = 40;
+
+        // Content area: (x=0, y=3, width=100, height=50)
+        let content_area = (0u16, 3u16, 100u16, 50u16);
+
+        // The split border should be at row 3 + (50 * 40 / 100) = 3 + 20 = 23
+        // Click near that row, but to the right of students pane (column > 30)
+        let started = app.start_drag(23, 50, content_area);
+        assert!(started);
+        assert_eq!(app.drag_target, DragTarget::OverviewSplit);
+
+        // Drag to new position (row 28, which is 50% of content height)
+        // (28 - 3) / 50 * 100 = 50%
+        app.update_drag(28, 50, content_area);
+        assert_eq!(app.overview_split_percent, 50);
+
+        app.end_drag();
+    }
+
+    #[test]
+    fn test_drag_not_started_outside_borders() {
+        let mut app = App::new();
+        // Use a tab without overview split to simplify test
+        app.current_tab = Tab::Homework;
+        app.students_pane_width = 30;
+
+        let content_area = (0u16, 3u16, 100u16, 40u16);
+
+        // Click far from vertical border (30 +/- 2)
+        let started = app.start_drag(20, 60, content_area);
+        assert!(!started);
+        assert_eq!(app.drag_target, DragTarget::None);
+    }
+
+    #[test]
+    fn test_drag_respects_bounds() {
+        let mut app = App::new();
+        app.current_tab = Tab::Overview;
+        app.students_pane_width = 30;
+
+        let content_area = (0u16, 3u16, 100u16, 40u16);
+
+        // Start drag on students pane border
+        app.start_drag(10, 30, content_area);
+        assert_eq!(app.drag_target, DragTarget::StudentsPaneWidth);
+
+        // Try to drag beyond minimum (15)
+        app.update_drag(10, 5, content_area);
+        assert_eq!(app.students_pane_width, 15); // Clamped to min
+
+        // Try to drag beyond maximum (60)
+        app.update_drag(10, 80, content_area);
+        assert_eq!(app.students_pane_width, 60); // Clamped to max
     }
 }

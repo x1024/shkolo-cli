@@ -713,17 +713,26 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                 MouseEventKind::ScrollDown => {
                                     app.scroll_down();
                                 }
-                                // Mouse click
+                                // Mouse click / drag start
                                 MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                    let terminal_size = terminal.size()?;
+                                    let header_height = 3u16;
+                                    let footer_height = 3u16;
+                                    let content_height = terminal_size.height.saturating_sub(header_height + footer_height);
+                                    let content_area = (0, header_height, terminal_size.width, content_height);
+
+                                    // First check if starting a drag on a border
+                                    if app.start_drag(mouse.row, mouse.column, content_area) {
+                                        // Drag started, don't process as click
+                                    }
                                     // Tab bar is at rows 0-2 (3-line header with border)
-                                    if mouse.row <= 2 {
+                                    else if mouse.row <= 2 {
                                         app.click_tab(mouse.column);
                                     }
                                     // Content area starts at row 3
                                     else if mouse.row >= 3 {
                                         // Check if click is in content area (not status bar)
-                                        let terminal_height = terminal.size()?.height;
-                                        if mouse.row < terminal_height.saturating_sub(3) {
+                                        if mouse.row < terminal_size.height.saturating_sub(3) {
                                             let click_result = app.click_list_item(mouse.row, 3, mouse.column, app.students_pane_width);
                                             match click_result {
                                                 ClickResult::ActivateNotification(index) => {
@@ -750,13 +759,20 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                         }
                                     }
                                 }
-                                // Drag for pane resizing
+                                // Drag for split resizing
                                 MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
-                                    // Only resize if dragging in content area (row >= 3)
-                                    if mouse.row >= 3 {
-                                        let new_width = mouse.column.clamp(15, 60);
-                                        app.students_pane_width = new_width;
+                                    if app.is_dragging() {
+                                        let terminal_size = terminal.size()?;
+                                        let header_height = 3u16;
+                                        let footer_height = 3u16;
+                                        let content_height = terminal_size.height.saturating_sub(header_height + footer_height);
+                                        let content_area = (0, header_height, terminal_size.width, content_height);
+                                        app.update_drag(mouse.row, mouse.column, content_area);
                                     }
+                                }
+                                // End drag on mouse up
+                                MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                                    app.end_drag();
                                 }
                                 _ => {}
                             }
