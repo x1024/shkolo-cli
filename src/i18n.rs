@@ -301,8 +301,8 @@ impl T {
     pub fn key_navigate_scroll(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Навигация / Превърти", Lang::En => "Navigate / Scroll" }
     }
-    pub fn key_quick_select_student(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Бърз избор ученик", Lang::En => "Quick select student" }
+    pub fn key_quick_select_tab(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Бърз избор раздел", Lang::En => "Quick select tab" }
     }
     pub fn key_refresh(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Обнови", Lang::En => "Refresh data" }

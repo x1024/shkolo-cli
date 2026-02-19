@@ -126,27 +126,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        // Number keys for quick student selection (only when not on Settings tab)
-        KeyCode::Char('1') => {
-            app.select_student(0);
-            Action::None
-        }
-        KeyCode::Char('2') => {
-            app.select_student(1);
-            Action::None
-        }
-        KeyCode::Char('3') => {
-            app.select_student(2);
-            Action::None
-        }
-        KeyCode::Char('4') => {
-            app.select_student(3);
-            Action::None
-        }
-        KeyCode::Char('5') => {
-            app.select_student(4);
-            Action::None
-        }
+        // Number keys for quick tab selection (1-9)
+        // Note: On Settings tab, 1-3 are handled above for login options
+        KeyCode::Char('1') => { app.select_tab(0); Action::None }
+        KeyCode::Char('2') => { app.select_tab(1); Action::None }
+        KeyCode::Char('3') => { app.select_tab(2); Action::None }
+        KeyCode::Char('4') => { app.select_tab(3); Action::None }
+        KeyCode::Char('5') => { app.select_tab(4); Action::None }
+        KeyCode::Char('6') => { app.select_tab(5); Action::None }
+        KeyCode::Char('7') => { app.select_tab(6); Action::None }
+        KeyCode::Char('8') => { app.select_tab(7); Action::None }
+        KeyCode::Char('9') => { app.select_tab(8); Action::None }
 
         // Refresh
         KeyCode::Char('r') => Action::Refresh,
@@ -432,7 +422,7 @@ pub fn get_keybindings(app: &App) -> Vec<(&'static str, &'static str)> {
     bindings.push(("←/h/{ →/l/}", T::key_switch_tabs(lang)));
     bindings.push(("Tab", T::key_toggle_focus(lang)));
     bindings.push(("↓/j ↑/k", T::key_navigate_scroll(lang)));
-    bindings.push(("1-5", T::key_quick_select_student(lang)));
+    bindings.push(("1-9", T::key_quick_select_tab(lang)));
     bindings.push(("r", T::key_refresh(lang)));
     bindings.push(("R", T::key_force_refresh(lang)));
     bindings.push(("G", T::key_toggle_lang(lang)));

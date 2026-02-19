@@ -310,6 +310,13 @@ impl App {
         self.list_offset = 0;
     }
 
+    /// Select tab by index (0-8 for 9 tabs)
+    pub fn select_tab(&mut self, index: usize) {
+        if let Some(&tab) = Tab::all().get(index) {
+            self.set_tab(tab);
+        }
+    }
+
     /// Handle click on tab bar - returns true if a tab was clicked
     pub fn click_tab(&mut self, column: u16) -> bool {
         // Tab bar layout: " TabName " with borders
@@ -1141,6 +1148,29 @@ mod tests {
         // Previous tab wraps around (Overview -> Settings)
         app.prev_tab();
         assert_eq!(app.current_tab, Tab::Settings);
+    }
+
+    #[test]
+    fn test_select_tab_by_index() {
+        let mut app = App::new();
+        assert_eq!(app.current_tab, Tab::Overview);
+
+        // Select tab by index (0-8 for 9 tabs)
+        app.select_tab(0);
+        assert_eq!(app.current_tab, Tab::Overview);
+
+        app.select_tab(1);
+        assert_eq!(app.current_tab, Tab::Homework);
+
+        app.select_tab(4);
+        assert_eq!(app.current_tab, Tab::Absences);
+
+        app.select_tab(8);
+        assert_eq!(app.current_tab, Tab::Settings);
+
+        // Invalid index should be ignored
+        app.select_tab(99);
+        assert_eq!(app.current_tab, Tab::Settings); // Unchanged
     }
 
     #[test]
