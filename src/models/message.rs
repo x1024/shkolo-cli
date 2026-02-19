@@ -9,10 +9,91 @@ pub struct MessageFolder {
     pub folder_unread_count: i32,
 }
 
+/// Raw message within a thread (from API)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageFoldersResponse {
-    #[serde(default)]
-    pub folders: Option<Vec<MessageFolder>>,
+pub struct MessageRaw {
+    pub id: Option<i64>,
+    pub body: Option<String>,
+    pub user_id: Option<i64>,
+    pub user_name: Option<String>,
+    pub user_names: Option<String>,
+    pub created_at: Option<String>,
+    pub is_system: Option<bool>,
+}
+
+/// A single message within a conversation thread
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub id: i64,
+    pub body: String,
+    pub sender_id: i64,
+    pub sender_name: String,
+    pub date: String,
+    pub is_system: bool,
+}
+
+impl Message {
+    pub fn from_raw(raw: &MessageRaw) -> Self {
+        Self {
+            id: raw.id.unwrap_or(0),
+            body: raw.body.clone().unwrap_or_default(),
+            sender_id: raw.user_id.unwrap_or(0),
+            sender_name: raw.user_names.clone()
+                .or_else(|| raw.user_name.clone())
+                .unwrap_or_default(),
+            date: Self::format_date(raw.created_at.as_deref()),
+            is_system: raw.is_system.unwrap_or(false),
+        }
+    }
+
+    fn format_date(date_str: Option<&str>) -> String {
+        match date_str {
+            Some(d) if d.len() >= 16 => {
+                // Format: "2026-02-18 09:47:18" -> "18.02.2026 09:47"
+                let parts: Vec<&str> = d.split(' ').collect();
+                if parts.len() >= 2 {
+                    let date_parts: Vec<&str> = parts[0].split('-').collect();
+                    if date_parts.len() == 3 {
+                        let time: String = parts[1].chars().take(5).collect();
+                        return format!("{}.{}.{} {}", date_parts[2], date_parts[1], date_parts[0], time);
+                    }
+                }
+                d.to_string()
+            }
+            Some(d) => d.to_string(),
+            None => String::new(),
+        }
+    }
+}
+
+/// Recipient for composing new messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecipientRaw {
+    pub id: Option<i64>,
+    pub name: Option<String>,
+    pub names: Option<String>,
+    #[serde(rename = "type")]
+    pub recipient_type: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Recipient {
+    pub id: i64,
+    pub name: String,
+    pub recipient_type: String,
+}
+
+impl Recipient {
+    pub fn from_raw(raw: &RecipientRaw) -> Self {
+        Self {
+            id: raw.id.unwrap_or(0),
+            name: raw.names.clone()
+                .or_else(|| raw.name.clone())
+                .unwrap_or_default(),
+            recipient_type: raw.recipient_type.clone().unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,12 +108,6 @@ pub struct MessageThreadRaw {
     pub is_draft: Option<i32>,
     pub updated_at: Option<String>,
     pub thread_creator: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageThreadsResponse {
-    #[serde(default)]
-    pub threads: Option<Vec<MessageThreadRaw>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

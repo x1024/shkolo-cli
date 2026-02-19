@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::i18n::Lang;
-use super::app::{App, Focus, Tab};
+use super::app::{App, Focus, Tab, InputMode, MessageView};
 
 pub enum Action {
     None,
@@ -12,13 +12,40 @@ pub enum Action {
     LoginPassword,
     LoginGoogle,
     ImportToken,
+    // Message actions
+    OpenThread(i64),       // Open thread with given ID
+    CloseThread,           // Close current thread
+    SendReply(String),     // Send reply message
+    StartCompose,          // Start composing a new message
+    SendCompose { subject: String, body: String, recipients: Vec<i64> }, // Send new message
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
-    // Handle Ctrl+C
+    // Handle Ctrl+C (always works)
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.quit();
         return Action::None;
+    }
+
+    // Dismiss error on any key
+    if app.error_message.is_some() {
+        app.clear_error();
+        return Action::None;
+    }
+
+    // Handle input mode first (for reply/compose)
+    if app.input_mode != InputMode::Normal {
+        return handle_input_mode(app, key);
+    }
+
+    // Handle message thread view
+    if app.current_tab == Tab::Messages && app.message_view == MessageView::Thread {
+        return handle_thread_view(app, key);
+    }
+
+    // Handle compose view
+    if app.current_tab == Tab::Messages && app.message_view == MessageView::Compose {
+        return handle_compose_view(app, key);
     }
 
     // Settings tab has special key bindings
@@ -113,7 +140,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('R') => Action::RefreshAll,
 
-        // Resize students pane
+        // Resize students pane (horizontal)
         KeyCode::Char('[') | KeyCode::Char('-') => {
             app.resize_students_pane(-2);
             app.set_status(format!("Pane width: {}", app.students_pane_width));
@@ -125,11 +152,42 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
+        // Resize overview split (vertical) - only on Overview tab
+        KeyCode::Char('<') => {
+            if app.current_tab == Tab::Overview {
+                app.resize_overview_split(-5);
+                app.set_status(format!("Overview split: {}%", app.overview_split_percent));
+            }
+            Action::None
+        }
+        KeyCode::Char('>') => {
+            if app.current_tab == Tab::Overview {
+                app.resize_overview_split(5);
+                app.set_status(format!("Overview split: {}%", app.overview_split_percent));
+            }
+            Action::None
+        }
+
         // Enter to activate/select
         KeyCode::Enter => {
             // On Notifications tab, navigate to related tab
             if app.current_tab == Tab::Notifications {
                 app.activate_notification();
+            }
+            // On Messages tab, open the selected thread
+            else if app.current_tab == Tab::Messages {
+                if let Some(thread_id) = app.open_thread() {
+                    return Action::OpenThread(thread_id);
+                }
+            }
+            Action::None
+        }
+
+        // 'c' to compose new message (only on Messages tab)
+        KeyCode::Char('c') | KeyCode::Char('C') => {
+            if app.current_tab == Tab::Messages && app.message_view == MessageView::List {
+                app.start_compose();
+                return Action::StartCompose;
             }
             Action::None
         }
@@ -157,6 +215,160 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
+        _ => Action::None,
+    }
+}
+
+/// Handle keys when in input mode (reply/compose)
+fn handle_input_mode(app: &mut App, key: KeyEvent) -> Action {
+    match key.code {
+        // Escape cancels input
+        KeyCode::Esc => {
+            match app.input_mode {
+                InputMode::Reply => {
+                    app.cancel_input();
+                }
+                InputMode::ComposeSubject | InputMode::ComposeBody => {
+                    app.cancel_compose();
+                }
+                _ => {}
+            }
+            Action::None
+        }
+        // Tab moves to next step in compose mode
+        KeyCode::Tab => {
+            if app.input_mode == InputMode::ComposeSubject {
+                app.compose_next_step();
+            }
+            Action::None
+        }
+        // Enter submits the input
+        KeyCode::Enter => {
+            match app.input_mode {
+                InputMode::Reply => {
+                    if !app.input_buffer.is_empty() {
+                        let message = app.take_input();
+                        return Action::SendReply(message);
+                    }
+                }
+                InputMode::ComposeSubject => {
+                    // Move to body entry
+                    app.compose_next_step();
+                }
+                InputMode::ComposeBody => {
+                    // Send the composed message
+                    if app.can_send_compose() {
+                        let subject = app.compose_subject.clone();
+                        let body = app.input_buffer.clone();
+                        let recipients = app.selected_recipients.clone();
+                        app.cancel_compose();
+                        return Action::SendCompose { subject, body, recipients };
+                    }
+                }
+                _ => {}
+            }
+            Action::None
+        }
+        // Backspace deletes character before cursor
+        KeyCode::Backspace => {
+            app.input_backspace();
+            Action::None
+        }
+        // Delete deletes character at cursor
+        KeyCode::Delete => {
+            app.input_delete();
+            Action::None
+        }
+        // Left/Right move cursor
+        KeyCode::Left => {
+            app.input_left();
+            Action::None
+        }
+        KeyCode::Right => {
+            app.input_right();
+            Action::None
+        }
+        // Home/End for cursor
+        KeyCode::Home => {
+            app.input_cursor = 0;
+            Action::None
+        }
+        KeyCode::End => {
+            app.input_cursor = app.input_buffer.len();
+            Action::None
+        }
+        // Character input
+        KeyCode::Char(c) => {
+            app.input_char(c);
+            Action::None
+        }
+        _ => Action::None,
+    }
+}
+
+/// Handle keys when in compose view (recipient selection)
+fn handle_compose_view(app: &mut App, key: KeyEvent) -> Action {
+    match key.code {
+        // Escape cancels compose
+        KeyCode::Esc => {
+            app.cancel_compose();
+            Action::None
+        }
+        // Enter or Space toggles recipient selection
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            if app.input_mode == InputMode::Normal {
+                app.toggle_recipient(app.list_offset);
+            }
+            Action::None
+        }
+        // 's' to start entering subject
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            if !app.selected_recipients.is_empty() {
+                app.input_mode = InputMode::ComposeSubject;
+            }
+            Action::None
+        }
+        // Up/Down to navigate recipients
+        KeyCode::Down | KeyCode::Char('j') => {
+            let max = app.recipients.len().saturating_sub(1);
+            if app.list_offset < max {
+                app.list_offset += 1;
+            }
+            Action::None
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.list_offset = app.list_offset.saturating_sub(1);
+            Action::None
+        }
+        _ => Action::None,
+    }
+}
+
+/// Handle keys when viewing a message thread
+fn handle_thread_view(app: &mut App, key: KeyEvent) -> Action {
+    match key.code {
+        // Escape or q closes the thread view
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_thread();
+            Action::CloseThread
+        }
+        // r starts reply mode
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            app.start_reply();
+            Action::None
+        }
+        // j/k or Down/Up scroll messages
+        KeyCode::Down | KeyCode::Char('j') => {
+            let max = app.thread_messages.len().saturating_sub(1);
+            if app.thread_offset < max {
+                app.thread_offset += 1;
+            }
+            Action::None
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.thread_offset = app.thread_offset.saturating_sub(1);
+            Action::None
+        }
         _ => Action::None,
     }
 }

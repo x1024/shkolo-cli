@@ -36,23 +36,5 @@ impl<T> ApiResponse<T> {
             data,
         }
     }
-
-    pub fn fresh(data: T) -> Self {
-        Self::new(data, false, None)
-    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiError {
-    pub success: bool,
-    pub error: String,
-}
-
-impl ApiError {
-    pub fn new(error: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error: error.into(),
-        }
-    }
-}

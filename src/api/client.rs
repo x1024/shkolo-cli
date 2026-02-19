@@ -46,18 +46,6 @@ impl ShkoloClient {
         self.school_year
     }
 
-    pub fn set_token(&mut self, token: String) {
-        self.token = Some(token);
-    }
-
-    pub fn set_school_year(&mut self, year: i64) {
-        self.school_year = Some(year);
-    }
-
-    pub fn is_authenticated(&self) -> bool {
-        self.token.is_some()
-    }
-
     fn headers(&self, authorized: bool) -> header::HeaderMap {
         let mut headers = header::HeaderMap::new();
         headers.insert(header::ACCEPT, "application/json".parse().unwrap());
@@ -226,19 +214,9 @@ impl ShkoloClient {
         self.get(&format!("/v1/diary/pupils/{}/scheduleHours?date={}", pupil_id, date)).await
     }
 
-    /// Get schedule for current user on a specific date
-    pub async fn get_schedule(&self, date: &str) -> Result<ScheduleResponse> {
-        self.get(&format!("/v1/diary/scheduleHours?date={}", date)).await
-    }
-
     /// Get events/invitations for a pupil (includes upcoming tests)
     pub async fn get_pupil_events(&self, pupil_id: i64) -> Result<EventsResponse> {
         self.get(&format!("/v1/events/invitations?pupil_user_id={}", pupil_id)).await
-    }
-
-    /// Get all events
-    pub async fn get_events(&self) -> Result<EventsResponse> {
-        self.get("/v1/events").await
     }
 
     /// Get notifications
@@ -261,39 +239,9 @@ impl ShkoloClient {
         self.get(&format!("/v1/diary/pupils/{}/feedbacks", pupil_id)).await
     }
 
-    /// Get messages (testing endpoint discovery)
-    pub async fn get_messages(&self) -> Result<serde_json::Value> {
-        self.get("/v1/messages").await
-    }
-
-    /// Get conversations (testing endpoint discovery)
-    pub async fn get_conversations(&self) -> Result<serde_json::Value> {
-        self.get("/v1/conversations").await
-    }
-
-    /// Get inbox (testing endpoint discovery)
-    pub async fn get_inbox(&self) -> Result<serde_json::Value> {
-        self.get("/v1/inbox").await
-    }
-
-    /// Get chat threads (testing endpoint discovery)
-    pub async fn get_chat_threads(&self) -> Result<serde_json::Value> {
-        self.get("/v1/chat/threads").await
-    }
-
-    /// Get chat (testing endpoint discovery)
-    pub async fn get_chat(&self) -> Result<serde_json::Value> {
-        self.get("/v1/chat").await
-    }
-
-    /// Get diary messages (testing endpoint discovery)
-    pub async fn get_diary_messages(&self) -> Result<serde_json::Value> {
-        self.get("/v1/diary/messages").await
-    }
-
-    /// Test various endpoints
-    pub async fn test_endpoint(&self, path: &str) -> Result<serde_json::Value> {
-        self.get(path).await
+    /// Get raw feedbacks response for debugging
+    pub async fn get_feedbacks_raw(&self, pupil_id: i64) -> Result<serde_json::Value> {
+        self.get(&format!("/v1/diary/pupils/{}/feedbacks", pupil_id)).await
     }
 
     // Messenger (Chat/Messages)
@@ -317,9 +265,67 @@ impl ShkoloClient {
         Ok(threads)
     }
 
-    /// Get a specific thread
-    pub async fn get_messenger_thread(&self, thread_id: i64) -> Result<serde_json::Value> {
+    /// Get messages from a thread
+    pub async fn get_thread_messages(&self, thread_id: i64) -> Result<Vec<Message>> {
+        let response: serde_json::Value = self.get(&format!("/v1/messenger/threads/{}", thread_id)).await?;
+
+        // Try different possible response structures
+        let messages_raw: Vec<MessageRaw> = if let Some(messages) = response.get("messages") {
+            serde_json::from_value(messages.clone()).unwrap_or_default()
+        } else if let Some(messages) = response.get("thread_messages") {
+            serde_json::from_value(messages.clone()).unwrap_or_default()
+        } else if let Some(thread) = response.get("thread") {
+            // Sometimes the response wraps everything in "thread"
+            thread.get("messages")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default()
+        } else if response.is_array() {
+            // Response might be directly an array of messages
+            serde_json::from_value(response.clone()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        Ok(messages_raw.iter().map(Message::from_raw).collect())
+    }
+
+    /// Get raw thread data for debugging
+    pub async fn get_thread_raw(&self, thread_id: i64) -> Result<serde_json::Value> {
         self.get(&format!("/v1/messenger/threads/{}", thread_id)).await
+    }
+
+    /// Reply to an existing thread
+    pub async fn reply_to_thread(&self, thread_id: i64, body: &str) -> Result<serde_json::Value> {
+        let payload = serde_json::json!({
+            "body": body
+        });
+        self.post(&format!("/v1/messenger/threads/{}", thread_id), &payload, true).await
+    }
+
+    /// Get available recipients for composing messages
+    pub async fn get_recipients(&self) -> Result<Vec<Recipient>> {
+        let response: serde_json::Value = self.get("/v1/messenger/recipients").await?;
+
+        // Recipients can be in "recipients" array or directly an array
+        let recipients_raw: Vec<RecipientRaw> = if response.is_array() {
+            serde_json::from_value(response)?
+        } else {
+            response.get("recipients")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default()
+        };
+
+        Ok(recipients_raw.iter().map(Recipient::from_raw).collect())
+    }
+
+    /// Create a new message thread
+    pub async fn create_thread(&self, recipient_ids: &[i64], subject: &str, body: &str) -> Result<serde_json::Value> {
+        let payload = serde_json::json!({
+            "recipient_ids": recipient_ids,
+            "subject": subject,
+            "body": body
+        });
+        self.post("/v1/messenger/threads", &payload, true).await
     }
 
     /// Check if user can send messages
