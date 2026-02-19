@@ -336,11 +336,14 @@ impl App {
     pub fn click_list_item(&mut self, row: u16, header_offset: u16, column: u16, students_width: u16) -> ClickResult {
         // row is absolute, we need to convert to list index
         // header_offset is the number of rows taken by the header (tab bar + borders)
-        if row < header_offset {
+        // Each pane also has its own border (1 row at top)
+        let pane_border = 1u16;
+
+        if row < header_offset + pane_border {
             return ClickResult::None;
         }
 
-        let relative_row = (row - header_offset) as usize;
+        let relative_row = (row - header_offset - pane_border) as usize;
 
         // Check if click is in students pane (left side)
         if column < students_width {
@@ -354,22 +357,22 @@ impl App {
         }
 
         // Click is in content pane
-        let new_offset = self.list_offset + relative_row;
+        // Calculate the actual item index: scroll offset + row position in visible area
+        let item_index = self.list_offset + relative_row;
 
-        // Check bounds
-        if new_offset < self.current_list_length() {
-            self.list_offset = new_offset;
-            // Return activation result based on current tab
+        // Check bounds - clicking should NOT scroll, just select/activate the item
+        if item_index < self.current_list_length() {
+            // Return activation result based on current tab with the item index
             return match self.current_tab {
-                Tab::Notifications => ClickResult::ActivateNotification,
+                Tab::Notifications => ClickResult::ActivateNotification(item_index),
                 Tab::Messages => {
                     if self.message_view == MessageView::List {
-                        ClickResult::ActivateMessage
+                        ClickResult::ActivateMessage(item_index)
                     } else {
                         ClickResult::None
                     }
                 }
-                _ => ClickResult::ItemSelected,
+                _ => ClickResult::ItemSelected(item_index),
             };
         }
 
@@ -488,11 +491,16 @@ impl App {
 
     /// Open the selected message thread
     pub fn open_thread(&mut self) -> Option<i64> {
+        self.open_thread_at(self.list_offset)
+    }
+
+    /// Open a specific message thread by index
+    pub fn open_thread_at(&mut self, index: usize) -> Option<i64> {
         if self.current_tab != Tab::Messages || self.message_view != MessageView::List {
             return None;
         }
 
-        if let Some(thread) = self.messages.get(self.list_offset) {
+        if let Some(thread) = self.messages.get(index) {
             let thread_id = thread.id;
             self.selected_thread_id = Some(thread_id);
             self.message_view = MessageView::Thread;
@@ -626,11 +634,16 @@ impl App {
 
     /// Activate the selected notification - navigate to the appropriate tab
     pub fn activate_notification(&mut self) -> bool {
+        self.activate_notification_at(self.list_offset)
+    }
+
+    /// Activate a specific notification by index
+    pub fn activate_notification_at(&mut self, index: usize) -> bool {
         if self.current_tab != Tab::Notifications {
             return false;
         }
 
-        if let Some(notification) = self.notifications.get(self.list_offset) {
+        if let Some(notification) = self.notifications.get(index) {
             if let Some(ref notification_type) = notification.notification_type {
                 let target_tab = match notification_type.as_str() {
                     "new_homework" => Some(Tab::Homework),
@@ -1033,9 +1046,9 @@ impl Default for App {
 pub enum ClickResult {
     None,
     StudentSelected,
-    ItemSelected,
-    ActivateNotification,
-    ActivateMessage,
+    ItemSelected(usize),         // Item index selected
+    ActivateNotification(usize), // Notification index to activate
+    ActivateMessage(usize),      // Message index to open
 }
 
 #[cfg(test)]
@@ -1332,5 +1345,124 @@ mod tests {
         // Clear error
         app.clear_error();
         assert_eq!(app.error_message, None);
+    }
+
+    #[test]
+    fn test_click_student_selection() {
+        use crate::models::student::Student;
+
+        let mut app = App::new();
+        // Setup: 3 students, header_offset=3 (tabs + borders), students_width=25
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 3, name: "Carol".into(), class_name: None, school_name: None }),
+        ];
+        let header_offset = 3;
+        let students_width = 25;
+
+        // Click on first student (row 4 = header 3 + border 1 + item 0)
+        let result = app.click_list_item(4, header_offset, 5, students_width);
+        assert!(matches!(result, ClickResult::StudentSelected));
+        assert_eq!(app.selected_student, 0);
+
+        // Click on second student (row 5)
+        let result = app.click_list_item(5, header_offset, 5, students_width);
+        assert!(matches!(result, ClickResult::StudentSelected));
+        assert_eq!(app.selected_student, 1);
+
+        // Click on third student (row 6)
+        let result = app.click_list_item(6, header_offset, 5, students_width);
+        assert!(matches!(result, ClickResult::StudentSelected));
+        assert_eq!(app.selected_student, 2);
+
+        // Click outside list bounds (row 7) - no change
+        let result = app.click_list_item(7, header_offset, 5, students_width);
+        assert!(matches!(result, ClickResult::None));
+        assert_eq!(app.selected_student, 2); // Still last selected
+
+        // Click in header area (row 3 = header_offset)
+        let result = app.click_list_item(3, header_offset, 5, students_width);
+        assert!(matches!(result, ClickResult::None));
+    }
+
+    #[test]
+    fn test_click_content_does_not_scroll() {
+        let mut app = App::new();
+        app.current_tab = Tab::Notifications;
+        app.focus = Focus::Content;
+
+        // Setup notifications
+        app.notifications = vec![
+            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None },
+            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None },
+            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None },
+            Notification { id: Some("4".into()), title: "N4".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None },
+        ];
+
+        let header_offset = 3;
+        let students_width = 25;
+
+        // Start scrolled down by 1
+        app.list_offset = 1;
+        let initial_offset = app.list_offset;
+
+        // Click on visible item at row 4 (should be index 1 in visible area, so actual item index = 1 + 1 = 2)
+        let result = app.click_list_item(4, header_offset, 30, students_width);
+
+        // Click should return the correct index
+        assert!(matches!(result, ClickResult::ActivateNotification(1)));
+
+        // Scroll position should NOT have changed
+        assert_eq!(app.list_offset, initial_offset);
+    }
+
+    #[test]
+    fn test_click_notification_activates() {
+        let mut app = App::new();
+        app.current_tab = Tab::Notifications;
+        app.focus = Focus::Content;
+
+        app.notifications = vec![
+            Notification { id: Some("1".into()), title: "N1".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None },
+            Notification { id: Some("2".into()), title: "N2".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None },
+        ];
+
+        // Activate notification at index 1
+        let success = app.activate_notification_at(1);
+        assert!(success);
+        assert_eq!(app.current_tab, Tab::Homework);
+
+        // Reset
+        app.current_tab = Tab::Notifications;
+
+        // Activate notification at index 0
+        let success = app.activate_notification_at(0);
+        assert!(success);
+        assert_eq!(app.current_tab, Tab::Grades);
+    }
+
+    #[test]
+    fn test_click_message_opens_thread() {
+        let mut app = App::new();
+        app.current_tab = Tab::Messages;
+        app.message_view = MessageView::List;
+
+        app.messages = vec![
+            MessageThread { id: 100, subject: "Thread A".into(), last_message: "".into(), last_sender: "".into(), participant_count: 1, is_unread: false, updated_at: "".into(), creator: "".into() },
+            MessageThread { id: 200, subject: "Thread B".into(), last_message: "".into(), last_sender: "".into(), participant_count: 2, is_unread: true, updated_at: "".into(), creator: "".into() },
+        ];
+
+        // Open thread at index 1
+        let result = app.open_thread_at(1);
+        assert_eq!(result, Some(200));
+        assert_eq!(app.message_view, MessageView::Thread);
+        assert_eq!(app.selected_thread_id, Some(200));
+
+        // Close and try index 0
+        app.close_thread();
+        let result = app.open_thread_at(0);
+        assert_eq!(result, Some(100));
+        assert_eq!(app.selected_thread_id, Some(100));
     }
 }

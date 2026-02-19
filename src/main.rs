@@ -804,11 +804,11 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                         if mouse.row < terminal_height.saturating_sub(3) {
                                             let click_result = app.click_list_item(mouse.row, 3, mouse.column, app.students_pane_width);
                                             match click_result {
-                                                ClickResult::ActivateNotification => {
-                                                    app.activate_notification();
+                                                ClickResult::ActivateNotification(index) => {
+                                                    app.activate_notification_at(index);
                                                 }
-                                                ClickResult::ActivateMessage => {
-                                                    if let Some(thread_id) = app.open_thread() {
+                                                ClickResult::ActivateMessage(index) => {
+                                                    if let Some(thread_id) = app.open_thread_at(index) {
                                                         // Load thread messages
                                                         app.set_status("Loading thread...");
                                                         match client.get_thread_messages(thread_id).await {
@@ -823,7 +823,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                                         }
                                                     }
                                                 }
-                                                _ => {}
+                                                ClickResult::ItemSelected(_) | ClickResult::StudentSelected | ClickResult::None => {}
                                             }
                                         }
                                     }
