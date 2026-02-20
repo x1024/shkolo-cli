@@ -108,6 +108,9 @@ impl T {
     pub fn loading_base(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Зареждане", Lang::En => "Loading" }
     }
+    pub fn auto_refreshing(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Автоматично обновяване...", Lang::En => "Auto-refreshing..." }
+    }
     pub fn no_homework(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Няма домашни", Lang::En => "No homework found" }
     }
@@ -306,6 +309,12 @@ impl T {
     }
     pub fn key_resize_pane(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Преоразмери панел", Lang::En => "Resize students pane" }
+    }
+    pub fn key_go_back(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Назад", Lang::En => "Go back" }
+    }
+    pub fn key_go_forward(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Напред", Lang::En => "Go forward" }
     }
     pub fn key_resize_split(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Преоразмери разделител", Lang::En => "Resize split" }
