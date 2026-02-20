@@ -18,7 +18,8 @@ pub struct MessageRaw {
     pub user_name: Option<String>,
     pub user_names: Option<String>,
     pub created_at: Option<String>,
-    pub is_system: Option<bool>,
+    // API returns 0/1 integer, not boolean
+    pub is_system: Option<i32>,
 }
 
 /// A single message within a conversation thread
@@ -42,7 +43,7 @@ impl Message {
                 .or_else(|| raw.user_name.clone())
                 .unwrap_or_default(),
             date: Self::format_date(raw.created_at.as_deref()),
-            is_system: raw.is_system.unwrap_or(false),
+            is_system: raw.is_system.unwrap_or(0) != 0,
         }
     }
 
@@ -66,12 +67,15 @@ impl Message {
     }
 }
 
-/// Recipient for composing new messages
+/// Recipient for composing new messages (API returns "users" array)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecipientRaw {
     pub id: Option<i64>,
     pub name: Option<String>,
     pub names: Option<String>,
+    // API uses roles_name for the role display name
+    pub roles_name: Option<String>,
+    pub roles_slug: Option<String>,
     #[serde(rename = "type")]
     pub recipient_type: Option<String>,
     pub email: Option<String>,
@@ -81,7 +85,7 @@ pub struct RecipientRaw {
 pub struct Recipient {
     pub id: i64,
     pub name: String,
-    pub recipient_type: String,
+    pub role: String,
 }
 
 impl Recipient {
@@ -91,7 +95,10 @@ impl Recipient {
             name: raw.names.clone()
                 .or_else(|| raw.name.clone())
                 .unwrap_or_default(),
-            recipient_type: raw.recipient_type.clone().unwrap_or_default(),
+            // Use roles_name if available, otherwise recipient_type
+            role: raw.roles_name.clone()
+                .or_else(|| raw.recipient_type.clone())
+                .unwrap_or_default(),
         }
     }
 }

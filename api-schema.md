@@ -222,7 +222,7 @@ X-Guest-Token: {guest_token}
 |--------|----------|-------------|
 | GET | `/v1/messenger/folders` | Get message folders |
 | GET | `/v1/messenger/threads?folderId={folder_id}` | Get threads in folder |
-| GET | `/v1/messenger/threads/{thread_id}` | Get specific thread |
+| GET | `/v1/messenger/threads/{thread_id}/messages` | Get thread with messages |
 | GET | `/v1/messenger/recipients` | Get available recipients |
 | GET | `/v1/messenger/canSendMessages` | Check if user can send messages |
 | POST | `/v1/messenger/threads` | Create new thread/message |

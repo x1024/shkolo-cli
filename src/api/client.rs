@@ -267,18 +267,11 @@ impl ShkoloClient {
 
     /// Get messages from a thread
     pub async fn get_thread_messages(&self, thread_id: i64) -> Result<Vec<Message>> {
-        let response: serde_json::Value = self.get(&format!("/v1/messenger/threads/{}", thread_id)).await?;
+        let response: serde_json::Value = self.get(&format!("/v1/messenger/threads/{}/messages", thread_id)).await?;
 
-        // Try different possible response structures
+        // Response has "messages" array
         let messages_raw: Vec<MessageRaw> = if let Some(messages) = response.get("messages") {
             serde_json::from_value(messages.clone()).unwrap_or_default()
-        } else if let Some(messages) = response.get("thread_messages") {
-            serde_json::from_value(messages.clone()).unwrap_or_default()
-        } else if let Some(thread) = response.get("thread") {
-            // Sometimes the response wraps everything in "thread"
-            thread.get("messages")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default()
         } else if response.is_array() {
             // Response might be directly an array of messages
             serde_json::from_value(response.clone()).unwrap_or_default()
@@ -291,7 +284,7 @@ impl ShkoloClient {
 
     /// Get raw thread data for debugging
     pub async fn get_thread_raw(&self, thread_id: i64) -> Result<serde_json::Value> {
-        self.get(&format!("/v1/messenger/threads/{}", thread_id)).await
+        self.get(&format!("/v1/messenger/threads/{}/messages", thread_id)).await
     }
 
     /// Reply to an existing thread
@@ -306,11 +299,13 @@ impl ShkoloClient {
     pub async fn get_recipients(&self) -> Result<Vec<Recipient>> {
         let response: serde_json::Value = self.get("/v1/messenger/recipients").await?;
 
-        // Recipients can be in "recipients" array or directly an array
+        // API returns "users" array (not "recipients")
         let recipients_raw: Vec<RecipientRaw> = if response.is_array() {
             serde_json::from_value(response)?
         } else {
-            response.get("recipients")
+            // Try "users" first (actual API response), then "recipients" as fallback
+            response.get("users")
+                .or_else(|| response.get("recipients"))
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default()
         };
