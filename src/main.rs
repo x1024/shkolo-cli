@@ -498,17 +498,47 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
 
     // Main loop - async event handling with background refresh
     let mut last_time_update = std::time::Instant::now();
+    let mut last_auto_refresh = std::time::Instant::now();
     let mut event_stream = EventStream::new();
 
     // Type alias for background task
     type BackgroundTask = Pin<Box<dyn Future<Output = Result<BackgroundResult>> + Send>>;
-    let mut background_task: Option<BackgroundTask> = None;
+
+    // Initial refresh on startup
+    app.loading = true;
+    app.set_status(T::loading(app.lang));
+    let mut background_task: Option<BackgroundTask> = {
+        let client_clone = client.clone();
+        let cache_clone = cache.clone();
+        let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
+        Some(Box::pin(async move {
+            refresh_data_background(&client_clone, &cache_clone, false, student_ids).await
+        }))
+    };
 
     loop {
         // Update time periodically for schedule highlighting (once per minute is enough)
         if last_time_update.elapsed() >= Duration::from_secs(60) {
             app.update_time();
             last_time_update = std::time::Instant::now();
+        }
+
+        // Auto-refresh check
+        if background_task.is_none() {
+            if let Some(interval_minutes) = app.auto_refresh_interval.minutes() {
+                let interval_secs = interval_minutes * 60;
+                if last_auto_refresh.elapsed() >= Duration::from_secs(interval_secs) {
+                    app.loading = true;
+                    app.set_status(T::auto_refreshing(app.lang));
+                    let client_clone = client.clone();
+                    let cache_clone = cache.clone();
+                    let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
+                    background_task = Some(Box::pin(async move {
+                        refresh_data_background(&client_clone, &cache_clone, false, student_ids).await
+                    }));
+                    last_auto_refresh = std::time::Instant::now();
+                }
+            }
         }
 
         // Tick for loading animation
@@ -519,7 +549,8 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
         terminal.draw(|f| draw(f, &app))?;
 
         // Use tokio::select! to handle events and background tasks concurrently
-        let tick_delay = tokio::time::sleep(Duration::from_millis(if app.loading { 100 } else { 1000 }));
+        // Short tick for responsive input handling; slightly longer when not loading
+        let tick_delay = tokio::time::sleep(Duration::from_millis(if app.loading { 50 } else { 100 }));
 
         tokio::select! {
             // Handle background task completion
@@ -575,6 +606,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                     background_task = Some(Box::pin(async move {
                                         refresh_data_background(&client_clone, &cache_clone, false, student_ids).await
                                     }));
+                                    last_auto_refresh = std::time::Instant::now();
                                 }
                                 Action::RefreshAll if background_task.is_none() => {
                                     app.loading = true;
@@ -585,6 +617,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                     background_task = Some(Box::pin(async move {
                                         refresh_data_background(&client_clone, &cache_clone, true, student_ids).await
                                     }));
+                                    last_auto_refresh = std::time::Instant::now();
                                 }
                                 Action::RefreshSchedule if background_task.is_none() => {
                                     app.loading = true;
@@ -696,6 +729,30 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                     }
                                     app.loading = false;
                                 }
+                                Action::NavigateBack | Action::NavigateForward => {
+                                    // Navigation was handled in the handler, but we may need
+                                    // to reload thread messages if we navigated to a thread view
+                                    if app.message_view == tui::app::MessageView::Thread {
+                                        if let Some(thread_id) = app.selected_thread_id {
+                                            app.loading = true;
+                                            app.set_status(T::loading_thread(app.lang));
+                                            terminal.draw(|f| draw(f, &app))?;
+
+                                            match client.get_thread_messages(thread_id).await {
+                                                Ok(messages) => {
+                                                    app.thread_messages = messages;
+                                                    app.loading = false;
+                                                    app.clear_status();
+                                                }
+                                                Err(e) => {
+                                                    app.set_error(format!("{}\n{}", T::failed_load_thread(app.lang), e));
+                                                    app.loading = false;
+                                                    app.close_thread();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 Action::None => {}
                                 // These are handled by guards above (when background_task.is_none())
                                 // If we get here, a background task is already running
@@ -732,8 +789,10 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
                                     // Content area starts at row 3
                                     else if mouse.row >= 3 {
                                         // Check if click is in content area (not status bar)
-                                        if mouse.row < terminal_size.height.saturating_sub(3) {
-                                            let click_result = app.click_list_item(mouse.row, 3, mouse.column, app.students_pane_width);
+                                        let content_bottom = terminal_size.height.saturating_sub(3);
+                                        if mouse.row < content_bottom {
+                                            let content_height = content_bottom.saturating_sub(3); // from row 3 to status bar
+                                            let click_result = app.click_list_item(mouse.row, 3, mouse.column, app.effective_students_width(), content_height);
                                             match click_result {
                                                 ClickResult::ActivateNotification(index) => {
                                                     app.activate_notification_at(index);
@@ -1286,7 +1345,7 @@ async fn get_feedbacks(
         .collect();
 
     // Sort by date (newest first)
-    feedbacks.sort_by(|a, b| b.date.cmp(&a.date));
+    feedbacks.sort_by(Feedback::cmp_by_date);
 
     cache.save_feedbacks(student_id, &feedbacks)?;
 

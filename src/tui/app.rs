@@ -4,6 +4,84 @@ use crate::i18n::{Lang, T};
 use crate::models::*;
 use time::OffsetDateTime;
 
+/// Calculate scroll offset to keep selected item centered with margins.
+/// This implements "scrolloff" behavior - the selected item stays near the center
+/// of the visible area, with scrolling only happening when needed.
+///
+/// # Arguments
+/// * `selected` - Index of the selected item (0-based)
+/// * `visible_height` - Number of items that fit in the visible area
+/// * `total_items` - Total number of items in the list
+///
+/// # Returns
+/// The scroll offset (index of first visible item)
+pub fn calculate_scroll(selected: usize, visible_height: usize, total_items: usize) -> usize {
+    if total_items == 0 || visible_height == 0 {
+        return 0;
+    }
+
+    // If everything fits, no scrolling needed
+    if total_items <= visible_height {
+        return 0;
+    }
+
+    let max_scroll = total_items.saturating_sub(visible_height);
+
+    // Calculate ideal scroll to center the selected item
+    let ideal_center = selected.saturating_sub(visible_height / 2);
+
+    // Clamp to valid range
+    ideal_center.min(max_scroll)
+}
+
+/// Auto-refresh interval options (in minutes)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutoRefreshInterval {
+    Off,
+    Min1,
+    Min5,
+    #[default]
+    Min10,
+    Min30,
+    Min60,
+}
+
+impl AutoRefreshInterval {
+    pub fn minutes(&self) -> Option<u64> {
+        match self {
+            Self::Off => None,
+            Self::Min1 => Some(1),
+            Self::Min5 => Some(5),
+            Self::Min10 => Some(10),
+            Self::Min30 => Some(30),
+            Self::Min60 => Some(60),
+        }
+    }
+
+    pub fn label(&self, lang: Lang) -> &'static str {
+        match self {
+            Self::Off => match lang { Lang::Bg => "Изкл.", Lang::En => "Off" },
+            Self::Min1 => "1 min",
+            Self::Min5 => "5 min",
+            Self::Min10 => "10 min",
+            Self::Min30 => "30 min",
+            Self::Min60 => "60 min",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Off => Self::Min1,
+            Self::Min1 => Self::Min5,
+            Self::Min5 => Self::Min10,
+            Self::Min10 => Self::Min30,
+            Self::Min30 => Self::Min60,
+            Self::Min60 => Self::Off,
+        }
+    }
+
+}
+
 /// Input mode for text entry (reply/compose)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -19,6 +97,14 @@ pub enum MessageView {
     List,    // Viewing message list
     Thread,  // Viewing a specific thread
     Compose, // Composing a new message
+}
+
+/// A navigation location (for back/forward history)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Location {
+    pub tab: Tab,
+    pub message_view: MessageView,
+    pub selected_thread_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +187,8 @@ pub enum DragTarget {
     StudentsPaneWidth,
     /// Horizontal border between schedule and homework/grades in overview
     OverviewSplit,
+    /// Horizontal border between homework and grades in overview (bottom section)
+    OverviewBottomSplit,
 }
 
 #[derive(Debug, Clone)]
@@ -144,19 +232,17 @@ impl StudentData {
             .sum()
     }
 
-    /// Get recent grades (last few per subject)
-    pub fn recent_grades_summary(&self) -> Vec<(&str, Vec<&str>)> {
+    /// Get all grades for all subjects
+    pub fn all_grades_summary(&self) -> Vec<(&str, Vec<&str>)> {
         self.grades.iter()
             .filter(|g| !g.term1_grades.is_empty() || !g.term2_grades.is_empty())
-            .take(5)
             .map(|g| {
-                let recent: Vec<&str> = g.term2_grades.iter()
+                // Combine term2 and term1 grades (term2 first as it's more recent)
+                let all: Vec<&str> = g.term2_grades.iter()
                     .chain(g.term1_grades.iter())
-                    .rev()
-                    .take(3)
                     .map(|s| s.as_str())
                     .collect();
-                (g.subject.as_str(), recent)
+                (g.subject.as_str(), all)
             })
             .collect()
     }
@@ -189,6 +275,7 @@ pub struct App {
     pub tick: usize, // Frame counter for animations
     pub students_pane_width: u16, // Resizable pane width
     pub overview_split_percent: u16, // Vertical split for overview (schedule vs homework/grades)
+    pub overview_bottom_split_percent: u16, // Vertical split for overview bottom (homework vs grades)
     // Message thread state
     pub message_view: MessageView,
     pub selected_thread_id: Option<i64>,
@@ -202,10 +289,16 @@ pub struct App {
     pub recipients: Vec<Recipient>,
     pub selected_recipients: Vec<i64>,
     pub compose_subject: String,
+    pub compose_body: String,
     // Help overlay
     pub show_help: bool,
     // Drag state for split resizing
     pub drag_target: DragTarget,
+    // Auto-refresh settings
+    pub auto_refresh_interval: AutoRefreshInterval,
+    // Navigation history (for back/forward)
+    nav_history: Vec<Location>,
+    nav_index: usize,  // Current position in history
 }
 
 impl App {
@@ -239,6 +332,7 @@ impl App {
             tick: 0,
             students_pane_width: 30,
             overview_split_percent: 40, // 40% for schedule, 60% for homework/grades
+            overview_bottom_split_percent: 60, // 60% for homework, 40% for grades
             // Message thread state
             message_view: MessageView::List,
             selected_thread_id: None,
@@ -252,11 +346,26 @@ impl App {
             recipients: Vec::new(),
             selected_recipients: Vec::new(),
             compose_subject: String::new(),
+            compose_body: String::new(),
             // Help
             show_help: false,
             // Drag state
             drag_target: DragTarget::None,
+            // Auto-refresh (default 10 min)
+            auto_refresh_interval: AutoRefreshInterval::default(),
+            // Navigation history - start with Overview
+            nav_history: vec![Location {
+                tab: Tab::Overview,
+                message_view: MessageView::List,
+                selected_thread_id: None,
+            }],
+            nav_index: 0,
         }
+    }
+
+    /// Cycle auto-refresh interval to next value
+    pub fn next_auto_refresh(&mut self) {
+        self.auto_refresh_interval = self.auto_refresh_interval.next();
     }
 
     /// Move schedule to next day
@@ -285,6 +394,126 @@ impl App {
         self.schedule_date == self.current_date
     }
 
+    /// Check if the students pane should be shown
+    /// Returns false for tabs that don't use it or when there's only one student
+    pub fn has_students_pane(&self) -> bool {
+        // Tabs that don't show students pane
+        if matches!(self.current_tab, Tab::Notifications | Tab::Settings | Tab::Messages) {
+            return false;
+        }
+        // Only show if there's more than one student
+        self.students.len() > 1
+    }
+
+    /// Get effective students pane width (0 if pane is hidden)
+    pub fn effective_students_width(&self) -> u16 {
+        if self.has_students_pane() {
+            self.students_pane_width
+        } else {
+            0
+        }
+    }
+
+    // Navigation history methods
+
+    /// Get current location state
+    fn current_location(&self) -> Location {
+        Location {
+            tab: self.current_tab,
+            message_view: self.message_view,
+            selected_thread_id: self.selected_thread_id,
+        }
+    }
+
+    /// Push a new location to history (called when navigating)
+    fn push_location(&mut self, location: Location) {
+        // Don't push if it's the same as current location
+        if let Some(current) = self.nav_history.get(self.nav_index) {
+            if *current == location {
+                return;
+            }
+        }
+
+        // Truncate any forward history when navigating to new location
+        self.nav_history.truncate(self.nav_index + 1);
+
+        // Push new location
+        self.nav_history.push(location);
+        self.nav_index = self.nav_history.len() - 1;
+
+        // Limit history size to prevent unbounded growth
+        const MAX_HISTORY: usize = 50;
+        if self.nav_history.len() > MAX_HISTORY {
+            let excess = self.nav_history.len() - MAX_HISTORY;
+            self.nav_history.drain(0..excess);
+            self.nav_index = self.nav_index.saturating_sub(excess);
+        }
+    }
+
+    /// Check if we can go back
+    pub fn can_go_back(&self) -> bool {
+        self.nav_index > 0
+    }
+
+    /// Check if we can go forward
+    pub fn can_go_forward(&self) -> bool {
+        self.nav_index + 1 < self.nav_history.len()
+    }
+
+    /// Go back in navigation history
+    /// Returns true if we actually navigated (and may need to reload data)
+    pub fn go_back(&mut self) -> bool {
+        if !self.can_go_back() {
+            return false;
+        }
+
+        self.nav_index -= 1;
+        self.apply_location(self.nav_history[self.nav_index].clone());
+        true
+    }
+
+    /// Go forward in navigation history
+    /// Returns true if we actually navigated (and may need to reload data)
+    pub fn go_forward(&mut self) -> bool {
+        if !self.can_go_forward() {
+            return false;
+        }
+
+        self.nav_index += 1;
+        self.apply_location(self.nav_history[self.nav_index].clone());
+        true
+    }
+
+    /// Apply a location (navigate to it without adding to history)
+    fn apply_location(&mut self, location: Location) {
+        self.current_tab = location.tab;
+        self.message_view = location.message_view;
+        self.selected_thread_id = location.selected_thread_id;
+        self.list_offset = 0;
+        self.thread_offset = 0;
+
+        // Set appropriate focus based on tab
+        match location.tab {
+            Tab::Overview => {
+                self.focus = if self.has_students_pane() {
+                    Focus::Students
+                } else {
+                    Focus::OverviewSchedule
+                };
+            }
+            Tab::Messages | Tab::Feedbacks | Tab::Settings => {
+                self.focus = Focus::Content;
+            }
+            _ => {
+                self.focus = if self.has_students_pane() {
+                    Focus::Students
+                } else {
+                    Focus::Content
+                };
+            }
+        }
+    }
+
     pub fn resize_students_pane(&mut self, delta: i16) {
         let new_width = (self.students_pane_width as i16 + delta).clamp(15, 60) as u16;
         self.students_pane_width = new_width;
@@ -307,9 +536,7 @@ impl App {
         let hit_zone = 2; // Pixels on either side of border to detect drag
 
         // Check vertical border (students pane | content)
-        // Only for tabs that show the students pane
-        let has_students_pane = !matches!(self.current_tab, Tab::Notifications | Tab::Settings | Tab::Messages);
-        if has_students_pane {
+        if self.has_students_pane() {
             let border_x = content_x + self.students_pane_width;
             if column >= border_x.saturating_sub(hit_zone) && column <= border_x + hit_zone {
                 if row >= content_y && row < content_y + content_height {
@@ -319,14 +546,24 @@ impl App {
             }
         }
 
-        // Check horizontal border (overview split) - only on Overview tab
-        if self.current_tab == Tab::Overview && has_students_pane {
-            let content_start_x = content_x + self.students_pane_width;
+        // Check horizontal borders (overview splits) - only on Overview tab
+        if self.current_tab == Tab::Overview {
+            let content_start_x = content_x + self.effective_students_width();
             // Only in the content area (right of students pane)
             if column > content_start_x {
-                let split_row = content_y + (content_height as u32 * self.overview_split_percent as u32 / 100) as u16;
-                if row >= split_row.saturating_sub(hit_zone) && row <= split_row + hit_zone {
+                // Main split (schedule vs homework/grades)
+                let main_split_row = content_y + (content_height as u32 * self.overview_split_percent as u32 / 100) as u16;
+                if row >= main_split_row.saturating_sub(hit_zone) && row <= main_split_row + hit_zone {
                     self.drag_target = DragTarget::OverviewSplit;
+                    return true;
+                }
+
+                // Bottom split (homework vs grades) - within the bottom section
+                let bottom_section_start = main_split_row;
+                let bottom_section_height = content_height.saturating_sub(main_split_row.saturating_sub(content_y));
+                let bottom_split_row = bottom_section_start + (bottom_section_height as u32 * self.overview_bottom_split_percent as u32 / 100) as u16;
+                if row >= bottom_split_row.saturating_sub(hit_zone) && row <= bottom_split_row + hit_zone {
+                    self.drag_target = DragTarget::OverviewBottomSplit;
                     return true;
                 }
             }
@@ -352,6 +589,14 @@ impl App {
                 let relative_row = row.saturating_sub(content_y);
                 let percent = ((relative_row as u32 * 100) / content_height.max(1) as u32) as u16;
                 self.overview_split_percent = percent.clamp(20, 70);
+            }
+            DragTarget::OverviewBottomSplit => {
+                // Row position relative to bottom section start
+                let main_split_row = content_y + (content_height as u32 * self.overview_split_percent as u32 / 100) as u16;
+                let bottom_section_height = content_height.saturating_sub(main_split_row.saturating_sub(content_y));
+                let relative_row = row.saturating_sub(main_split_row);
+                let percent = ((relative_row as u32 * 100) / bottom_section_height.max(1) as u32) as u16;
+                self.overview_bottom_split_percent = percent.clamp(30, 80);
             }
         }
     }
@@ -381,19 +626,51 @@ impl App {
     }
 
     pub fn next_tab(&mut self) {
-        self.current_tab = self.current_tab.next();
-        self.list_offset = 0;
+        self.set_tab(self.current_tab.next());
     }
 
     pub fn prev_tab(&mut self) {
-        self.current_tab = self.current_tab.prev();
-        self.list_offset = 0;
+        self.set_tab(self.current_tab.prev());
     }
 
-    /// Set the current tab directly (for mouse click)
+    /// Set the current tab directly (for mouse click or keyboard)
     pub fn set_tab(&mut self, tab: Tab) {
+        // Push current location to history before navigating
+        let new_location = Location {
+            tab,
+            message_view: MessageView::List, // Reset to list view when changing tabs
+            selected_thread_id: None,
+        };
+        self.push_location(new_location);
+
         self.current_tab = tab;
+        self.message_view = MessageView::List;
+        self.selected_thread_id = None;
         self.list_offset = 0;
+
+        // Auto-select appropriate focus for the tab
+        match tab {
+            Tab::Overview => {
+                // Default to schedule pane
+                self.focus = if self.has_students_pane() {
+                    Focus::Students
+                } else {
+                    Focus::OverviewSchedule
+                };
+            }
+            Tab::Messages | Tab::Feedbacks | Tab::Settings => {
+                // Single-pane tabs: always focus content
+                self.focus = Focus::Content;
+            }
+            _ => {
+                // Other tabs: focus content if no students pane, otherwise students
+                self.focus = if self.has_students_pane() {
+                    Focus::Students
+                } else {
+                    Focus::Content
+                };
+            }
+        }
     }
 
     /// Select tab by index (0-8 for 9 tabs)
@@ -425,8 +702,16 @@ impl App {
     }
 
     /// Handle click on list item - selects and activates item based on row position
+    /// Also sets focus to the clicked pane.
     /// Returns ClickResult indicating what action should be taken
-    pub fn click_list_item(&mut self, row: u16, header_offset: u16, column: u16, students_width: u16) -> ClickResult {
+    ///
+    /// Parameters:
+    /// - row: absolute row of the click
+    /// - header_offset: rows taken by header (tab bar + borders)
+    /// - column: column of the click
+    /// - students_width: width of students pane
+    /// - content_height: height of content area (for overview split calculation)
+    pub fn click_list_item(&mut self, row: u16, header_offset: u16, column: u16, students_width: u16, content_height: u16) -> ClickResult {
         // row is absolute, we need to convert to list index
         // header_offset is the number of rows taken by the header (tab bar + borders)
         // Each pane also has its own border (1 row at top)
@@ -440,6 +725,7 @@ impl App {
 
         // Check if click is in students pane (left side)
         if column < students_width {
+            self.focus = Focus::Students;
             // Clicking on a student selects them
             if relative_row < self.students.len() {
                 self.selected_student = relative_row;
@@ -449,7 +735,30 @@ impl App {
             return ClickResult::None;
         }
 
-        // Click is in content pane
+        // Click is in content pane - set focus based on tab and position
+        if self.current_tab == Tab::Overview {
+            // Calculate which overview pane was clicked based on split positions
+            let content_row = row.saturating_sub(header_offset);
+            let main_split_row = (content_height as u32 * self.overview_split_percent as u32 / 100) as u16;
+
+            if content_row < main_split_row {
+                self.focus = Focus::OverviewSchedule;
+            } else {
+                // Bottom section - homework on top, grades on bottom (vertical split)
+                let bottom_section_height = content_height.saturating_sub(main_split_row);
+                let bottom_split_offset = (bottom_section_height as u32 * self.overview_bottom_split_percent as u32 / 100) as u16;
+                let grades_start = main_split_row + bottom_split_offset;
+
+                if content_row < grades_start {
+                    self.focus = Focus::OverviewHomework;
+                } else {
+                    self.focus = Focus::OverviewGrades;
+                }
+            }
+        } else {
+            self.focus = Focus::Content;
+        }
+
         // Calculate the actual item index: scroll offset + row position in visible area
         let item_index = self.list_offset + relative_row;
 
@@ -473,22 +782,39 @@ impl App {
     }
 
     pub fn toggle_focus(&mut self) {
+        let has_students = self.has_students_pane();
+
         self.focus = match self.current_tab {
             Tab::Overview => {
-                // Cycle: Students -> Schedule -> Homework -> Grades -> Students
-                match self.focus {
-                    Focus::Students => Focus::OverviewSchedule,
-                    Focus::OverviewSchedule => Focus::OverviewHomework,
-                    Focus::OverviewHomework => Focus::OverviewGrades,
-                    Focus::OverviewGrades => Focus::Students,
-                    _ => Focus::Students,
+                if has_students {
+                    // Cycle: Students -> Schedule -> Homework -> Grades -> Students
+                    match self.focus {
+                        Focus::Students => Focus::OverviewSchedule,
+                        Focus::OverviewSchedule => Focus::OverviewHomework,
+                        Focus::OverviewHomework => Focus::OverviewGrades,
+                        Focus::OverviewGrades => Focus::Students,
+                        _ => Focus::OverviewSchedule,
+                    }
+                } else {
+                    // No students pane: Schedule -> Homework -> Grades -> Schedule
+                    match self.focus {
+                        Focus::OverviewSchedule => Focus::OverviewHomework,
+                        Focus::OverviewHomework => Focus::OverviewGrades,
+                        Focus::OverviewGrades => Focus::OverviewSchedule,
+                        _ => Focus::OverviewSchedule,
+                    }
                 }
             }
             _ => {
-                // Other tabs: Students -> Content -> Students
-                match self.focus {
-                    Focus::Students => Focus::Content,
-                    _ => Focus::Students,
+                if has_students {
+                    // Other tabs: Students -> Content -> Students
+                    match self.focus {
+                        Focus::Students => Focus::Content,
+                        _ => Focus::Students,
+                    }
+                } else {
+                    // No students pane: stay on Content
+                    Focus::Content
                 }
             }
         };
@@ -539,8 +865,8 @@ impl App {
     fn overview_list_length(&self) -> usize {
         match self.focus {
             Focus::OverviewSchedule => self.current_student().map(|s| s.schedule.len()).unwrap_or(0),
-            Focus::OverviewHomework => self.current_student().map(|s| s.homework.len().min(5)).unwrap_or(0),
-            Focus::OverviewGrades => self.current_student().map(|s| s.grades.len().min(5)).unwrap_or(0),
+            Focus::OverviewHomework => self.current_student().map(|s| s.homework.len()).unwrap_or(0),
+            Focus::OverviewGrades => self.current_student().map(|s| s.grades.len()).unwrap_or(0),
             _ => 0,
         }
     }
@@ -596,6 +922,15 @@ impl App {
 
         if let Some(thread) = self.messages.get(index) {
             let thread_id = thread.id;
+
+            // Push to navigation history
+            let new_location = Location {
+                tab: Tab::Messages,
+                message_view: MessageView::Thread,
+                selected_thread_id: Some(thread_id),
+            };
+            self.push_location(new_location);
+
             self.selected_thread_id = Some(thread_id);
             self.message_view = MessageView::Thread;
             self.thread_offset = 0;
@@ -677,11 +1012,13 @@ impl App {
     /// Start compose mode
     pub fn start_compose(&mut self) {
         self.message_view = MessageView::Compose;
-        self.input_mode = InputMode::ComposeSubject;
+        self.input_mode = InputMode::Normal;  // Start with recipient selection
         self.compose_subject.clear();
+        self.compose_body.clear();
         self.input_buffer.clear();
         self.input_cursor = 0;
         self.selected_recipients.clear();
+        self.list_offset = 0;  // Reset list position for recipients
     }
 
     /// Cancel compose and return to message list
@@ -689,19 +1026,42 @@ impl App {
         self.message_view = MessageView::List;
         self.input_mode = InputMode::Normal;
         self.compose_subject.clear();
+        self.compose_body.clear();
         self.input_buffer.clear();
         self.input_cursor = 0;
         self.selected_recipients.clear();
     }
 
-    /// Move to next compose step (subject -> body)
+    /// Move to next compose step (recipients -> subject -> body -> recipients)
     pub fn compose_next_step(&mut self) {
         match self.input_mode {
             InputMode::ComposeSubject => {
+                // Save subject, load body
+                self.compose_subject = self.input_buffer.clone();
+                self.input_buffer = self.compose_body.clone();
+                self.input_cursor = self.input_buffer.len();
+                self.input_mode = InputMode::ComposeBody;
+            }
+            _ => {}
+        }
+    }
+
+    /// Move to previous compose step (body -> subject -> recipients)
+    pub fn compose_prev_step(&mut self) {
+        match self.input_mode {
+            InputMode::ComposeBody => {
+                // Save body, load subject
+                self.compose_body = self.input_buffer.clone();
+                self.input_buffer = self.compose_subject.clone();
+                self.input_cursor = self.input_buffer.len();
+                self.input_mode = InputMode::ComposeSubject;
+            }
+            InputMode::ComposeSubject => {
+                // Save subject, go back to recipient selection
                 self.compose_subject = self.input_buffer.clone();
                 self.input_buffer.clear();
                 self.input_cursor = 0;
-                self.input_mode = InputMode::ComposeBody;
+                self.input_mode = InputMode::Normal;
             }
             _ => {}
         }
@@ -1105,10 +1465,7 @@ impl App {
             .collect();
 
         // Stable sort: by date (newest first), then by subject for ties
-        feedbacks.sort_by(|a, b| {
-            b.date.cmp(&a.date)
-                .then_with(|| a.subject.cmp(&b.subject))
-        });
+        feedbacks.sort_by(Feedback::cmp_by_date);
 
         Ok(feedbacks)
     }
@@ -1148,6 +1505,33 @@ pub enum ClickResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_calculate_scroll_center_biased() {
+        // Edge case: empty list
+        assert_eq!(calculate_scroll(0, 10, 0), 0);
+
+        // Edge case: everything fits
+        assert_eq!(calculate_scroll(5, 20, 10), 0);
+        assert_eq!(calculate_scroll(0, 20, 10), 0);
+
+        // Normal case: selected item should be centered
+        // 100 items, 10 visible, select item 50 -> scroll to ~45
+        let scroll = calculate_scroll(50, 10, 100);
+        assert!(scroll >= 43 && scroll <= 47, "scroll={} should center item 50 in 10-item view", scroll);
+
+        // Near start: selected near beginning shouldn't scroll much
+        assert_eq!(calculate_scroll(2, 10, 100), 0);
+
+        // Near end: selected near end shouldn't scroll past max
+        let max_scroll = 100 - 10; // 90
+        let scroll = calculate_scroll(98, 10, 100);
+        assert_eq!(scroll, max_scroll);
+
+        // Selection at exact middle of visible window
+        let scroll = calculate_scroll(5, 10, 100);
+        assert_eq!(scroll, 0); // Still at start, item 5 is visible
+    }
 
     #[test]
     fn test_app_initial_state() {
@@ -1264,6 +1648,11 @@ mod tests {
     fn test_focus_toggle_on_overview() {
         let mut app = App::new();
         app.current_tab = Tab::Overview;
+        // Need multiple students to show students pane
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+        ];
         assert_eq!(app.focus, Focus::Students);
 
         // Toggle cycles through: Students -> OverviewSchedule -> OverviewHomework -> OverviewGrades -> Students
@@ -1278,6 +1667,27 @@ mod tests {
 
         app.toggle_focus();
         assert_eq!(app.focus, Focus::Students);
+    }
+
+    #[test]
+    fn test_focus_toggle_single_student() {
+        let mut app = App::new();
+        app.current_tab = Tab::Overview;
+        // Single student - no students pane
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+        ];
+        app.focus = Focus::OverviewSchedule;
+
+        // Toggle cycles through: Schedule -> Homework -> Grades -> Schedule (no Students)
+        app.toggle_focus();
+        assert_eq!(app.focus, Focus::OverviewHomework);
+
+        app.toggle_focus();
+        assert_eq!(app.focus, Focus::OverviewGrades);
+
+        app.toggle_focus();
+        assert_eq!(app.focus, Focus::OverviewSchedule);
     }
 
     #[test]
@@ -1477,29 +1887,31 @@ mod tests {
         ];
         let header_offset = 3;
         let students_width = 25;
+        let content_height = 20;
 
         // Click on first student (row 4 = header 3 + border 1 + item 0)
-        let result = app.click_list_item(4, header_offset, 5, students_width);
+        let result = app.click_list_item(4, header_offset, 5, students_width, content_height);
         assert!(matches!(result, ClickResult::StudentSelected));
         assert_eq!(app.selected_student, 0);
+        assert_eq!(app.focus, Focus::Students);
 
         // Click on second student (row 5)
-        let result = app.click_list_item(5, header_offset, 5, students_width);
+        let result = app.click_list_item(5, header_offset, 5, students_width, content_height);
         assert!(matches!(result, ClickResult::StudentSelected));
         assert_eq!(app.selected_student, 1);
 
         // Click on third student (row 6)
-        let result = app.click_list_item(6, header_offset, 5, students_width);
+        let result = app.click_list_item(6, header_offset, 5, students_width, content_height);
         assert!(matches!(result, ClickResult::StudentSelected));
         assert_eq!(app.selected_student, 2);
 
         // Click outside list bounds (row 7) - no change
-        let result = app.click_list_item(7, header_offset, 5, students_width);
+        let result = app.click_list_item(7, header_offset, 5, students_width, content_height);
         assert!(matches!(result, ClickResult::None));
         assert_eq!(app.selected_student, 2); // Still last selected
 
         // Click in header area (row 3 = header_offset)
-        let result = app.click_list_item(3, header_offset, 5, students_width);
+        let result = app.click_list_item(3, header_offset, 5, students_width, content_height);
         assert!(matches!(result, ClickResult::None));
     }
 
@@ -1519,19 +1931,67 @@ mod tests {
 
         let header_offset = 3;
         let students_width = 25;
+        let content_height = 20;
 
         // Start scrolled down by 1
         app.list_offset = 1;
         let initial_offset = app.list_offset;
 
         // Click on visible item at row 4 (should be index 1 in visible area, so actual item index = 1 + 1 = 2)
-        let result = app.click_list_item(4, header_offset, 30, students_width);
+        let result = app.click_list_item(4, header_offset, 30, students_width, content_height);
 
         // Click should return the correct index
         assert!(matches!(result, ClickResult::ActivateNotification(1)));
 
         // Scroll position should NOT have changed
         assert_eq!(app.list_offset, initial_offset);
+
+        // Clicking in content area should set focus to Content
+        assert_eq!(app.focus, Focus::Content);
+    }
+
+    #[test]
+    fn test_click_sets_focus_on_overview() {
+        let mut app = App::new();
+        app.current_tab = Tab::Overview;
+        app.students_pane_width = 25;
+        app.overview_split_percent = 50; // Schedule takes 50% (rows 0-9)
+        app.overview_bottom_split_percent = 60; // Homework takes 60% of bottom (rows 10-15), grades (rows 16-19)
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+        ];
+
+        let header_offset = 3;
+        let students_width = 25;
+        let content_height = 20; // Total content height
+
+        // Layout:
+        // - Schedule: rows 0-9 (50% of 20)
+        // - Homework: rows 10-15 (60% of remaining 10 = 6 rows)
+        // - Grades: rows 16-19 (40% of remaining 10 = 4 rows)
+
+        // Click in students pane - should set Focus::Students
+        app.focus = Focus::Content;
+        app.click_list_item(5, header_offset, 5, students_width, content_height);
+        assert_eq!(app.focus, Focus::Students);
+
+        // Click in schedule area (row 5 relative to content = row 2, which is < 10)
+        // Absolute row 5 - header 3 = content row 2
+        app.focus = Focus::Students;
+        app.click_list_item(5, header_offset, 30, students_width, content_height);
+        assert_eq!(app.focus, Focus::OverviewSchedule);
+
+        // Click in homework area (content row 12, which is between 10 and 16)
+        // Absolute row 15 - header 3 = content row 12
+        app.focus = Focus::Students;
+        app.click_list_item(15, header_offset, 30, students_width, content_height);
+        assert_eq!(app.focus, Focus::OverviewHomework);
+
+        // Click in grades area (content row 17, which is >= 16)
+        // Absolute row 20 - header 3 = content row 17
+        app.focus = Focus::Students;
+        app.click_list_item(20, header_offset, 30, students_width, content_height);
+        assert_eq!(app.focus, Focus::OverviewGrades);
     }
 
     #[test]
@@ -1588,6 +2048,11 @@ mod tests {
         let mut app = App::new();
         app.current_tab = Tab::Overview;
         app.students_pane_width = 30;
+        // Need multiple students to show students pane
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+        ];
 
         // Content area: (x=0, y=3, width=100, height=40)
         let content_area = (0u16, 3u16, 100u16, 40u16);
@@ -1633,11 +2098,42 @@ mod tests {
     }
 
     #[test]
+    fn test_drag_overview_bottom_split() {
+        let mut app = App::new();
+        app.current_tab = Tab::Overview;
+        app.students_pane_width = 30;
+        app.overview_split_percent = 40;
+        app.overview_bottom_split_percent = 60;
+
+        // Content area: (x=0, y=3, width=100, height=50)
+        let content_area = (0u16, 3u16, 100u16, 50u16);
+
+        // Main split at row 3 + (50 * 40 / 100) = 23
+        // Bottom section starts at row 23, height = 30 (50 - 20)
+        // Bottom split at row 23 + (30 * 60 / 100) = 23 + 18 = 41
+        let started = app.start_drag(41, 50, content_area);
+        assert!(started);
+        assert_eq!(app.drag_target, DragTarget::OverviewBottomSplit);
+
+        // Drag to new position (row 35, which is about 40% of bottom section)
+        // (35 - 23) / 30 * 100 = 40%
+        app.update_drag(35, 50, content_area);
+        assert_eq!(app.overview_bottom_split_percent, 40);
+
+        app.end_drag();
+    }
+
+    #[test]
     fn test_drag_not_started_outside_borders() {
         let mut app = App::new();
         // Use a tab without overview split to simplify test
         app.current_tab = Tab::Homework;
         app.students_pane_width = 30;
+        // Need multiple students to show students pane
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+        ];
 
         let content_area = (0u16, 3u16, 100u16, 40u16);
 
@@ -1652,6 +2148,11 @@ mod tests {
         let mut app = App::new();
         app.current_tab = Tab::Overview;
         app.students_pane_width = 30;
+        // Need multiple students to show students pane
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+        ];
 
         let content_area = (0u16, 3u16, 100u16, 40u16);
 
@@ -1666,5 +2167,95 @@ mod tests {
         // Try to drag beyond maximum (60)
         app.update_drag(10, 80, content_area);
         assert_eq!(app.students_pane_width, 60); // Clamped to max
+    }
+
+    #[test]
+    fn test_navigation_history_basic() {
+        let mut app = App::new();
+
+        // Initial state: Overview tab
+        assert_eq!(app.current_tab, Tab::Overview);
+        assert!(!app.can_go_back()); // No history yet
+        assert!(!app.can_go_forward());
+
+        // Navigate to Homework tab
+        app.set_tab(Tab::Homework);
+        assert_eq!(app.current_tab, Tab::Homework);
+        assert!(app.can_go_back()); // Can go back to Overview
+        assert!(!app.can_go_forward());
+
+        // Go back
+        assert!(app.go_back());
+        assert_eq!(app.current_tab, Tab::Overview);
+        assert!(!app.can_go_back());
+        assert!(app.can_go_forward()); // Can go forward to Homework
+
+        // Go forward
+        assert!(app.go_forward());
+        assert_eq!(app.current_tab, Tab::Homework);
+        assert!(app.can_go_back());
+        assert!(!app.can_go_forward());
+    }
+
+    #[test]
+    fn test_navigation_history_thread() {
+        let mut app = App::new();
+        app.current_tab = Tab::Messages;
+        app.message_view = MessageView::List;
+        app.messages = vec![
+            MessageThread { id: 100, subject: "Test".into(), last_message: "".into(), last_sender: "".into(), participant_count: 1, is_unread: false, updated_at: "".into(), creator: "".into() },
+        ];
+
+        // Clear default history and start fresh
+        app.nav_history.clear();
+        app.nav_history.push(Location {
+            tab: Tab::Messages,
+            message_view: MessageView::List,
+            selected_thread_id: None,
+        });
+        app.nav_index = 0;
+
+        // Open thread
+        let thread_id = app.open_thread();
+        assert_eq!(thread_id, Some(100));
+        assert_eq!(app.message_view, MessageView::Thread);
+        assert!(app.can_go_back());
+
+        // Go back to list
+        assert!(app.go_back());
+        assert_eq!(app.message_view, MessageView::List);
+        assert_eq!(app.selected_thread_id, None);
+        assert!(app.can_go_forward());
+
+        // Go forward to thread
+        assert!(app.go_forward());
+        assert_eq!(app.message_view, MessageView::Thread);
+        assert_eq!(app.selected_thread_id, Some(100));
+    }
+
+    #[test]
+    fn test_navigation_history_truncates_forward() {
+        let mut app = App::new();
+
+        // Navigate: Overview -> Homework -> Grades
+        app.set_tab(Tab::Homework);
+        app.set_tab(Tab::Grades);
+        assert_eq!(app.current_tab, Tab::Grades);
+
+        // Go back to Homework
+        app.go_back();
+        assert_eq!(app.current_tab, Tab::Homework);
+        assert!(app.can_go_forward()); // Can still go to Grades
+
+        // Now navigate to Schedule (should truncate forward history)
+        app.set_tab(Tab::Schedule);
+        assert_eq!(app.current_tab, Tab::Schedule);
+        assert!(!app.can_go_forward()); // Forward history cleared
+
+        // History should be: Overview -> Homework -> Schedule
+        app.go_back();
+        assert_eq!(app.current_tab, Tab::Homework);
+        app.go_back();
+        assert_eq!(app.current_tab, Tab::Overview);
     }
 }

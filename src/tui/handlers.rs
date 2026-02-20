@@ -15,6 +15,9 @@ pub enum Action {
     SendReply(String),     // Send reply message
     StartCompose,          // Start composing a new message
     SendCompose { subject: String, body: String, recipients: Vec<i64> }, // Send new message
+    // Navigation history
+    NavigateBack,          // Go back in history (may need to reload data)
+    NavigateForward,       // Go forward in history (may need to reload data)
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
@@ -71,6 +74,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             KeyCode::Char('l') | KeyCode::Char('L') => {
                 return Action::Logout;
             }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                // Cycle auto-refresh interval
+                app.next_auto_refresh();
+                return Action::None;
+            }
             _ => {}
         }
     }
@@ -89,11 +97,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         }
 
         // Left/Right change tabs
-        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('{') => {
+        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('[') => {
             app.prev_tab();
             Action::None
         }
-        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('}') => {
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(']') => {
             app.next_tab();
             Action::None
         }
@@ -127,16 +135,23 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('9') => { app.select_tab(8); Action::None }
 
         // Refresh
-        KeyCode::Char('r') => Action::Refresh,
+        KeyCode::Char('r') => {
+            // On Schedule tab, refresh the selected date's schedule
+            if app.current_tab == Tab::Schedule {
+                Action::RefreshSchedule
+            } else {
+                Action::Refresh
+            }
+        }
         KeyCode::Char('R') => Action::RefreshAll,
 
         // Resize students pane (horizontal)
-        KeyCode::Char('[') | KeyCode::Char('-') => {
+        KeyCode::Char('-') => {
             app.resize_students_pane(-2);
             app.set_status(format!("Pane width: {}", app.students_pane_width));
             Action::None
         }
-        KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::Char('=') => {
+        KeyCode::Char('+') | KeyCode::Char('=') => {
             app.resize_students_pane(2);
             app.set_status(format!("Pane width: {}", app.students_pane_width));
             Action::None
@@ -205,6 +220,32 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
+        // Navigation history: Backspace = back, Shift+Backspace or Alt+Right = forward
+        KeyCode::Backspace => {
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                // Forward
+                if app.go_forward() {
+                    // Check if we need to reload thread messages
+                    if app.message_view == MessageView::Thread {
+                        if let Some(thread_id) = app.selected_thread_id {
+                            return Action::OpenThread(thread_id);
+                        }
+                    }
+                }
+            } else {
+                // Back
+                if app.go_back() {
+                    // Check if we need to reload thread messages
+                    if app.message_view == MessageView::Thread {
+                        if let Some(thread_id) = app.selected_thread_id {
+                            return Action::OpenThread(thread_id);
+                        }
+                    }
+                }
+            }
+            Action::None
+        }
+
         _ => Action::None,
     }
 }
@@ -225,10 +266,21 @@ fn handle_input_mode(app: &mut App, key: KeyEvent) -> Action {
             }
             Action::None
         }
-        // Tab moves to next step in compose mode
-        KeyCode::Tab => {
-            if app.input_mode == InputMode::ComposeSubject {
-                app.compose_next_step();
+        // Tab cycles forward, Shift+Tab cycles back in compose mode
+        KeyCode::Tab | KeyCode::BackTab => {
+            let is_back = key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT);
+            if is_back {
+                app.compose_prev_step();
+            } else {
+                match app.input_mode {
+                    InputMode::ComposeSubject => app.compose_next_step(),
+                    InputMode::ComposeBody => {
+                        // Tab in body cycles back to recipients
+                        app.compose_prev_step(); // body -> subject
+                        app.compose_prev_step(); // subject -> recipients
+                    }
+                    _ => {}
+                }
             }
             Action::None
         }
@@ -318,6 +370,16 @@ fn handle_compose_view(app: &mut App, key: KeyEvent) -> Action {
             }
             Action::None
         }
+        // Tab moves to subject (regardless of selection), Shift+Tab cycles from recipients to body
+        KeyCode::Tab => {
+            app.input_mode = InputMode::ComposeSubject;
+            Action::None
+        }
+        KeyCode::BackTab => {
+            // Shift+Tab from recipients cycles to body
+            app.input_mode = InputMode::ComposeBody;
+            Action::None
+        }
         // Up/Down to navigate recipients
         KeyCode::Down | KeyCode::Char('j') => {
             let max = app.recipients.len().saturating_sub(1);
@@ -337,10 +399,17 @@ fn handle_compose_view(app: &mut App, key: KeyEvent) -> Action {
 /// Handle keys when viewing a message thread
 fn handle_thread_view(app: &mut App, key: KeyEvent) -> Action {
     match key.code {
-        // Escape or q closes the thread view
-        KeyCode::Esc | KeyCode::Char('q') => {
-            app.close_thread();
-            Action::CloseThread
+        // Escape, q, or Backspace closes the thread view (goes back)
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => {
+            // Use navigation history to go back
+            if app.go_back() {
+                // Successfully went back - thread is already closed via apply_location
+                Action::CloseThread
+            } else {
+                // Fallback if no history (shouldn't happen normally)
+                app.close_thread();
+                Action::CloseThread
+            }
         }
         // r starts reply mode
         KeyCode::Char('r') | KeyCode::Char('R') => {
@@ -389,7 +458,7 @@ pub fn get_keybindings(app: &App) -> Vec<(&'static str, &'static str)> {
 
     // Message thread view (see handle_thread_view)
     if app.current_tab == Tab::Messages && app.message_view == MessageView::Thread {
-        bindings.push(("Esc/q", T::key_close_thread(lang)));
+        bindings.push(("⌫/Esc/q", T::key_go_back(lang)));
         bindings.push(("r", T::key_reply(lang)));
         bindings.push(("↓/j ↑/k", T::key_scroll(lang)));
         return bindings;
@@ -407,14 +476,16 @@ pub fn get_keybindings(app: &App) -> Vec<(&'static str, &'static str)> {
     // Normal mode - common bindings (see handle_key)
     // q/Esc/Ctrl+C all quit - consolidated into one entry
     bindings.push(("q/Esc/^C", T::key_quit(lang)));
-    bindings.push(("←/h/{ →/l/}", T::key_switch_tabs(lang)));
+    bindings.push(("←/h/[ →/l/]", T::key_switch_tabs(lang)));
     bindings.push(("Tab", T::key_toggle_focus(lang)));
     bindings.push(("↓/j ↑/k", T::key_navigate_scroll(lang)));
     bindings.push(("1-9", T::key_quick_select_tab(lang)));
     bindings.push(("r", T::key_refresh(lang)));
     bindings.push(("R", T::key_force_refresh(lang)));
     bindings.push(("G", T::key_toggle_lang(lang)));
-    bindings.push(("-/[ +/]/=", T::key_resize_pane(lang)));
+    bindings.push(("-/+/=", T::key_resize_pane(lang)));
+    bindings.push(("⌫", T::key_go_back(lang)));
+    bindings.push(("⇧⌫", T::key_go_forward(lang)));
 
     // Tab-specific bindings
     match app.current_tab {
@@ -440,4 +511,92 @@ pub fn get_keybindings(app: &App) -> Vec<(&'static str, &'static str)> {
     }
 
     bindings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn test_refresh_on_schedule_tab_refreshes_selected_date() {
+        let mut app = App::new();
+
+        // On Overview tab, 'r' should return Refresh
+        app.current_tab = Tab::Overview;
+        let action = handle_key(&mut app, key_event(KeyCode::Char('r')));
+        assert!(matches!(action, Action::Refresh));
+
+        // On Schedule tab, 'r' should return RefreshSchedule
+        app.current_tab = Tab::Schedule;
+        let action = handle_key(&mut app, key_event(KeyCode::Char('r')));
+        assert!(matches!(action, Action::RefreshSchedule));
+
+        // On Homework tab, 'r' should return Refresh
+        app.current_tab = Tab::Homework;
+        let action = handle_key(&mut app, key_event(KeyCode::Char('r')));
+        assert!(matches!(action, Action::Refresh));
+    }
+
+    #[test]
+    fn test_refresh_all_works_on_any_tab() {
+        let mut app = App::new();
+
+        // 'R' should always return RefreshAll regardless of tab
+        app.current_tab = Tab::Overview;
+        let action = handle_key(&mut app, key_event(KeyCode::Char('R')));
+        assert!(matches!(action, Action::RefreshAll));
+
+        app.current_tab = Tab::Schedule;
+        let action = handle_key(&mut app, key_event(KeyCode::Char('R')));
+        assert!(matches!(action, Action::RefreshAll));
+    }
+
+    #[test]
+    fn test_auto_refresh_toggle_on_settings() {
+        use crate::tui::app::AutoRefreshInterval;
+
+        let mut app = App::new();
+        app.current_tab = Tab::Settings;
+
+        // Default is 10 minutes
+        assert_eq!(app.auto_refresh_interval, AutoRefreshInterval::Min10);
+
+        // Press 'a' to cycle to next interval (30 min)
+        let action = handle_key(&mut app, key_event(KeyCode::Char('a')));
+        assert!(matches!(action, Action::None));
+        assert_eq!(app.auto_refresh_interval, AutoRefreshInterval::Min30);
+
+        // Continue cycling: 30 -> 60 -> Off -> 1 -> 5 -> 10
+        handle_key(&mut app, key_event(KeyCode::Char('A')));
+        assert_eq!(app.auto_refresh_interval, AutoRefreshInterval::Min60);
+
+        handle_key(&mut app, key_event(KeyCode::Char('a')));
+        assert_eq!(app.auto_refresh_interval, AutoRefreshInterval::Off);
+
+        handle_key(&mut app, key_event(KeyCode::Char('a')));
+        assert_eq!(app.auto_refresh_interval, AutoRefreshInterval::Min1);
+
+        handle_key(&mut app, key_event(KeyCode::Char('a')));
+        assert_eq!(app.auto_refresh_interval, AutoRefreshInterval::Min5);
+
+        handle_key(&mut app, key_event(KeyCode::Char('a')));
+        assert_eq!(app.auto_refresh_interval, AutoRefreshInterval::Min10);
+    }
+
+    #[test]
+    fn test_auto_refresh_interval_minutes() {
+        use crate::tui::app::AutoRefreshInterval;
+
+        assert_eq!(AutoRefreshInterval::Off.minutes(), None);
+        assert_eq!(AutoRefreshInterval::Min1.minutes(), Some(1));
+        assert_eq!(AutoRefreshInterval::Min5.minutes(), Some(5));
+        assert_eq!(AutoRefreshInterval::Min10.minutes(), Some(10));
+        assert_eq!(AutoRefreshInterval::Min30.minutes(), Some(30));
+        assert_eq!(AutoRefreshInterval::Min60.minutes(), Some(60));
+    }
 }

@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::i18n::T;
-use super::app::{App, Focus, Tab, InputMode, MessageView};
+use super::app::{App, Focus, Tab, InputMode, MessageView, calculate_scroll};
 use super::handlers::get_keybindings;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -195,23 +195,31 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
         _ => {}
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(app.students_pane_width),  // Resizable students list
-            Constraint::Min(40),     // Main content
-        ])
-        .split(area);
+    // Only show students pane if there's more than one student
+    let show_students_pane = app.students.len() > 1;
 
-    draw_students_list(frame, app, chunks[0]);
+    let content_area = if show_students_pane {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(app.students_pane_width),  // Resizable students list
+                Constraint::Min(40),     // Main content
+            ])
+            .split(area);
+
+        draw_students_list(frame, app, chunks[0]);
+        chunks[1]
+    } else {
+        area
+    };
 
     match app.current_tab {
-        Tab::Overview => draw_overview(frame, app, chunks[1]),
-        Tab::Homework => draw_homework(frame, app, chunks[1]),
-        Tab::Grades => draw_grades(frame, app, chunks[1]),
-        Tab::Schedule => draw_schedule(frame, app, chunks[1]),
-        Tab::Absences => draw_absences(frame, app, chunks[1]),
-        Tab::Feedbacks => draw_feedbacks(frame, app, chunks[1]),
+        Tab::Overview => draw_overview(frame, app, content_area),
+        Tab::Homework => draw_homework(frame, app, content_area),
+        Tab::Grades => draw_grades(frame, app, content_area),
+        Tab::Schedule => draw_schedule(frame, app, content_area),
+        Tab::Absences => draw_absences(frame, app, content_area),
+        Tab::Feedbacks => draw_feedbacks(frame, app, content_area),
         Tab::Notifications | Tab::Settings | Tab::Messages => unreachable!(), // Handled above
     }
 }
@@ -272,12 +280,12 @@ fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    // Second split: homework and grades
+    // Second split: homework and grades (configurable)
     let bottom_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(60),  // Homework
-            Constraint::Percentage(40),  // Grades summary
+            Constraint::Percentage(app.overview_bottom_split_percent),  // Homework
+            Constraint::Percentage(100 - app.overview_bottom_split_percent),  // Grades summary
         ])
         .split(main_chunks[1]);
 
@@ -466,7 +474,7 @@ fn draw_overview_grades(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
     let content = if let Some(data) = app.current_student() {
         let total = data.total_grades_count();
-        let summary = data.recent_grades_summary();
+        let summary = data.all_grades_summary();
 
         if summary.is_empty() {
             vec![ListItem::new(format!("  {}: {}", T::total_grades(lang), total))]
@@ -478,13 +486,18 @@ fn draw_overview_grades(frame: &mut Frame, app: &App, area: Rect) {
                 ))),
             ];
 
-            for (subject, grades) in summary {
+            // Calculate scroll position with center-biased scrolling
+            let estimated_item_height = 1;
+            let visible_items = (area.height as usize / estimated_item_height).max(1);
+            let scroll = calculate_scroll(app.grades_offset, visible_items, summary.len());
+
+            for (subject, grades) in summary.iter().skip(scroll) {
                 // Calculate average for these grades
                 let grade_strings: Vec<String> = grades.iter().map(|s| s.to_string()).collect();
                 let avg = calculate_average(&grade_strings);
 
                 let mut spans = vec![
-                    Span::raw(format!("  {}: ", truncate(subject, 15))),
+                    Span::raw(format!("  {}: ", subject)),
                 ];
 
                 // Average first (colored)
@@ -598,10 +611,15 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
                 all_items.push(HomeworkItem::Past(hw));
             }
 
+            // Calculate scroll position with center-biased scrolling
+            let estimated_item_height = 4;
+            let visible_items = (area.height as usize / estimated_item_height).max(1);
+            let scroll = calculate_scroll(app.list_offset, visible_items, all_items.len());
+
             // Now skip and render
             let mut items = Vec::new();
 
-            for item in all_items.into_iter().skip(app.list_offset) {
+            for item in all_items.into_iter().skip(scroll) {
                 match item {
                     HomeworkItem::Future(hw) => {
                         let due_str = hw.due_date
@@ -695,9 +713,15 @@ fn draw_grades(frame: &mut Frame, app: &App, area: Rect) {
         if data.grades.is_empty() {
             vec![ListItem::new(format!("  {}", T::no_grades(lang)))]
         } else {
+            // Calculate scroll position with center-biased scrolling
+            // Each grade entry takes ~5 lines
+            let estimated_item_height = 5;
+            let visible_items = (area.height as usize / estimated_item_height).max(1);
+            let scroll = calculate_scroll(app.list_offset, visible_items, data.grades.len());
+
             data.grades
                 .iter()
-                .skip(app.list_offset)
+                .skip(scroll)
                 .take(area.height.saturating_sub(2) as usize / 5)
                 .map(|grade| {
                     let mut lines = vec![
@@ -1007,7 +1031,12 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
             // Detailed list grouped by date (scrollable)
             let mut current_date = String::new();
 
-            for absence in data.absences.iter().skip(app.list_offset) {
+            // Calculate scroll position with center-biased scrolling
+            let estimated_item_height = 2;
+            let visible_items = (area.height as usize / estimated_item_height).max(1);
+            let scroll = calculate_scroll(app.list_offset, visible_items, data.absences.len());
+
+            for absence in data.absences.iter().skip(scroll) {
                 // Add date header if new date
                 if absence.date != current_date {
                     if !current_date.is_empty() {
@@ -1122,39 +1151,62 @@ fn draw_feedbacks(frame: &mut Frame, app: &App, area: Rect) {
             ))));
             items.push(ListItem::new(""));
 
-            // List feedbacks
-            for feedback in data.feedbacks.iter().skip(app.list_offset) {
+            // List feedbacks with center-biased scrolling
+            let estimated_item_height = 3;
+            let visible_items = (area.height as usize / estimated_item_height).max(1);
+            let scroll = calculate_scroll(app.list_offset, visible_items, data.feedbacks.len());
+
+            for (idx, feedback) in data.feedbacks.iter().enumerate().skip(scroll) {
+                let is_selected = idx == app.list_offset;
                 let emoji = feedback.emoji();
-                let style = if feedback.is_positive {
+
+                // Base style depends on positive/negative
+                let base_style = if feedback.is_positive {
                     Style::default().fg(Color::Green)
                 } else {
                     Style::default().fg(Color::Red)
                 };
 
+                // Selected items get yellow foreground and subtle background
+                let style = if is_selected {
+                    base_style.fg(Color::Yellow).bg(Color::Rgb(40, 40, 50))
+                } else {
+                    base_style
+                };
+
+                let detail_style = if is_selected {
+                    Style::default().bg(Color::Rgb(40, 40, 50))
+                } else {
+                    Style::default()
+                };
+
+                let selected_marker = if is_selected { "▸ " } else { "  " };
+
                 // Badge name with emoji and date
+                let bg = if is_selected { Color::Rgb(40, 40, 50) } else { Color::Reset };
                 items.push(ListItem::new(Line::from(vec![
-                    Span::raw("  "),
-                    Span::raw(emoji.clone()),
-                    Span::raw(" "),
+                    Span::styled(selected_marker, style),
+                    Span::styled(emoji.clone(), detail_style),
+                    Span::styled(" ", detail_style),
                     Span::styled(feedback.badge_name.clone(), style.add_modifier(Modifier::BOLD)),
-                    Span::raw("  "),
-                    Span::styled(feedback.date.clone(), Style::default().fg(Color::DarkGray)),
+                    Span::styled("  ", detail_style),
+                    Span::styled(feedback.date.clone(), Style::default().fg(Color::DarkGray).bg(bg)),
                 ])));
 
                 // Subject and teacher
                 items.push(ListItem::new(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(feedback.subject.clone(), Style::default().fg(Color::Cyan)),
-                    Span::raw(" - "),
-                    Span::styled(feedback.teacher.clone(), Style::default().fg(Color::DarkGray)),
+                    Span::styled("     ", detail_style),
+                    Span::styled(feedback.subject.clone(), Style::default().fg(Color::Cyan).bg(bg)),
+                    Span::styled(" - ", detail_style),
+                    Span::styled(feedback.teacher.clone(), Style::default().fg(Color::DarkGray).bg(bg)),
                 ])));
 
                 // Comment if present
                 if let Some(ref comment) = feedback.comment {
                     if !comment.is_empty() {
                         items.push(ListItem::new(Line::from(vec![
-                            Span::raw("     "),
-                            Span::styled(format!("\"{}\"", comment), Style::default().fg(Color::Gray)),
+                            Span::styled("     ", detail_style),
+                            Span::styled(format!("\"{}\"", comment), Style::default().fg(Color::Gray).bg(bg)),
                         ])));
                     }
                 }
@@ -1206,16 +1258,37 @@ fn draw_message_list(frame: &mut Frame, app: &App, area: Rect) {
     let content = if app.messages.is_empty() {
         vec![ListItem::new(format!("  {}", T::no_messages(lang)))]
     } else {
+        // Calculate scroll position with center-biased scrolling
+        // Each message takes ~4 lines on average
+        let estimated_item_height = 4;
+        let visible_items = (area.height as usize / estimated_item_height).max(1);
+        let scroll = calculate_scroll(app.list_offset, visible_items, app.messages.len());
+
         app.messages
             .iter()
             .enumerate()
-            .skip(app.list_offset)
+            .skip(scroll)
             .map(|(idx, msg)| {
                 let is_selected = idx == app.list_offset;
-                let style = if msg.is_unread {
+
+                // Base style depends on read/unread status
+                let base_style = if msg.is_unread {
                     Style::default().add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::DarkGray)
+                };
+
+                // Selected items get yellow foreground and subtle background
+                let style = if is_selected {
+                    base_style.fg(Color::Yellow).bg(Color::Rgb(40, 40, 50))
+                } else {
+                    base_style
+                };
+
+                let preview_style = if is_selected {
+                    Style::default().fg(Color::Gray).bg(Color::Rgb(40, 40, 50))
+                } else {
+                    Style::default().fg(Color::Gray)
                 };
 
                 let unread_marker = if msg.is_unread { T::new_marker(lang) } else { "" };
@@ -1234,7 +1307,7 @@ fn draw_message_list(frame: &mut Frame, app: &App, area: Rect) {
                 if !preview.is_empty() {
                     lines.push(Line::from(Span::styled(
                         format!("    {}", preview),
-                        Style::default().fg(Color::Gray),
+                        preview_style,
                     )));
                 }
 
@@ -1263,14 +1336,14 @@ fn draw_message_list(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_else(|| "unknown".to_string());
 
     let unread_count = app.messages.iter().filter(|m| m.is_unread).count();
-    let enter_hint = match lang {
-        crate::i18n::Lang::Bg => "[Enter]-отвори",
-        crate::i18n::Lang::En => "[Enter]-open",
+    let hints = match lang {
+        crate::i18n::Lang::Bg => "[Enter]-отвори [c]-ново",
+        crate::i18n::Lang::En => "[Enter]-open [c]-new",
     };
     let title = if unread_count > 0 {
-        format!(" {} ({} {}) ({}) {} ", T::messages(lang), unread_count, T::unread(lang), age, enter_hint)
+        format!(" {} ({} {}) ({}) {} ", T::messages(lang), unread_count, T::unread(lang), age, hints)
     } else {
-        format!(" {} ({}) {} ", T::messages(lang), age, enter_hint)
+        format!(" {} ({}) {} ", T::messages(lang), age, hints)
     };
 
     let is_focused = app.focus == Focus::Content;
@@ -1318,27 +1391,46 @@ fn draw_message_thread(frame: &mut Frame, app: &App, area: Rect) {
     let content: Vec<ListItem> = if app.thread_messages.is_empty() {
         vec![ListItem::new(format!("  {}", T::loading(lang)))]
     } else {
+        // Calculate scroll position with center-biased scrolling
+        let estimated_item_height = 4;
+        let visible_items = (messages_area.height as usize / estimated_item_height).max(1);
+        let scroll = calculate_scroll(app.thread_offset, visible_items, app.thread_messages.len());
+
         app.thread_messages
             .iter()
-            .skip(app.thread_offset)
-            .map(|msg| {
+            .enumerate()
+            .skip(scroll)
+            .map(|(idx, msg)| {
+                let is_selected = idx == app.thread_offset;
                 let mut lines = Vec::new();
 
+                // Selection highlighting
+                let bg = if is_selected { Color::Rgb(40, 40, 50) } else { Color::Reset };
+                let selected_marker = if is_selected { "▸ " } else { "  " };
+
                 // Sender and date
+                let sender_style = if is_selected {
+                    Style::default().fg(Color::Yellow).bg(bg).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                };
+
                 lines.push(Line::from(vec![
+                    Span::styled(selected_marker, Style::default().bg(bg)),
                     Span::styled(
-                        format!("  {} ", msg.sender_name),
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        format!("{} ", msg.sender_name),
+                        sender_style,
                     ),
                     Span::styled(
                         msg.date.clone(),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Color::DarkGray).bg(bg),
                     ),
                 ]));
 
                 // Message body
+                let body_style = Style::default().bg(bg);
                 for wrapped_line in wrap_text(&msg.body, text_width, "    ") {
-                    lines.push(Line::from(Span::raw(wrapped_line)));
+                    lines.push(Line::from(Span::styled(wrapped_line, body_style)));
                 }
 
                 lines.push(Line::from(""));
@@ -1399,10 +1491,17 @@ fn draw_compose(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    // Draw recipients list
-    let recipients_title = match lang {
-        crate::i18n::Lang::Bg => " Получатели (Space - избери, S - напред) ",
-        crate::i18n::Lang::En => " Recipients (Space - select, S - next) ",
+    // Draw recipients list - hint changes based on mode
+    let recipients_title = if app.input_mode == InputMode::Normal {
+        match lang {
+            crate::i18n::Lang::Bg => " Получатели (Space-избери, Tab-напред) ",
+            crate::i18n::Lang::En => " Recipients (Space-select, Tab-next) ",
+        }
+    } else {
+        match lang {
+            crate::i18n::Lang::Bg => " Получатели (Shift+Tab-назад) ",
+            crate::i18n::Lang::En => " Recipients (Shift+Tab-back) ",
+        }
     };
 
     let recipient_items: Vec<ListItem> = if app.recipients.is_empty() {
@@ -1418,15 +1517,23 @@ fn draw_compose(frame: &mut Frame, app: &App, area: Rect) {
                 let marker = if is_selected { "[✓] " } else { "[ ] " };
                 let cursor = if is_current { "▸ " } else { "  " };
 
-                let style = if is_selected {
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                let bg = if is_current { Color::Rgb(40, 40, 50) } else { Color::Reset };
+                let name_style = if is_selected {
+                    Style::default().fg(Color::Green).bg(bg).add_modifier(Modifier::BOLD)
                 } else if is_current {
-                    Style::default().fg(Color::Yellow)
+                    Style::default().fg(Color::Yellow).bg(bg)
                 } else {
                     Style::default()
                 };
 
-                ListItem::new(format!("{}{}{}", cursor, marker, r.name)).style(style)
+                // Show name and role
+                let display = if r.role.is_empty() {
+                    format!("{}{}{}", cursor, marker, r.name)
+                } else {
+                    format!("{}{}{} ({})", cursor, marker, r.name, r.role)
+                };
+
+                ListItem::new(display).style(name_style)
             })
             .collect()
     };
@@ -1453,9 +1560,16 @@ fn draw_compose(frame: &mut Frame, app: &App, area: Rect) {
         .split(chunks[1]);
 
     // Subject field
-    let subject_title = match lang {
-        crate::i18n::Lang::Bg => " Тема ",
-        crate::i18n::Lang::En => " Subject ",
+    let subject_title = if app.input_mode == InputMode::ComposeSubject {
+        match lang {
+            crate::i18n::Lang::Bg => " Тема (Tab-напред, Shift+Tab-назад) ",
+            crate::i18n::Lang::En => " Subject (Tab-next, Shift+Tab-back) ",
+        }
+    } else {
+        match lang {
+            crate::i18n::Lang::Bg => " Тема ",
+            crate::i18n::Lang::En => " Subject ",
+        }
     };
 
     let subject_text = if app.input_mode == InputMode::ComposeSubject {
@@ -1481,19 +1595,28 @@ fn draw_compose(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(subject, compose_chunks[0]);
 
     // Body field
-    let body_title = match lang {
-        crate::i18n::Lang::Bg => " Съобщение (Enter - изпрати) ",
-        crate::i18n::Lang::En => " Message (Enter - send) ",
+    let body_title = if app.input_mode == InputMode::ComposeBody {
+        match lang {
+            crate::i18n::Lang::Bg => " Съобщение (Enter-изпрати, Shift+Tab-назад) ",
+            crate::i18n::Lang::En => " Message (Enter-send, Shift+Tab-back) ",
+        }
+    } else {
+        match lang {
+            crate::i18n::Lang::Bg => " Съобщение ",
+            crate::i18n::Lang::En => " Message ",
+        }
     };
 
     let body_text = if app.input_mode == InputMode::ComposeBody {
         app.input_buffer.as_str()
     } else {
-        ""
+        app.compose_body.as_str()
     };
 
     let body_style = if app.input_mode == InputMode::ComposeBody {
         Style::default().fg(Color::Yellow)
+    } else if !app.compose_body.is_empty() {
+        Style::default().fg(Color::Green)
     } else {
         Style::default()
     };
@@ -1525,16 +1648,37 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
     let content = if app.notifications.is_empty() {
         vec![ListItem::new(format!("  {}", T::no_notifications(lang)))]
     } else {
+        // Calculate scroll position with center-biased scrolling
+        // Each notification takes ~3 lines on average
+        let estimated_item_height = 3;
+        let visible_items = (area.height as usize / estimated_item_height).max(1);
+        let scroll = calculate_scroll(app.list_offset, visible_items, app.notifications.len());
+
         app.notifications
             .iter()
             .enumerate()
-            .skip(app.list_offset)
+            .skip(scroll)
             .map(|(idx, notif)| {
                 let is_selected = idx == app.list_offset;
-                let read_style = if notif.is_read {
+
+                // Base style depends on read/unread status
+                let base_style = if notif.is_read {
                     Style::default().fg(Color::DarkGray)
                 } else {
                     Style::default().add_modifier(Modifier::BOLD)
+                };
+
+                // Selected items get yellow foreground and subtle background
+                let style = if is_selected {
+                    base_style.fg(Color::Yellow).bg(Color::Rgb(40, 40, 50))
+                } else {
+                    base_style
+                };
+
+                let body_style = if is_selected {
+                    Style::default().fg(Color::Gray).bg(Color::Rgb(40, 40, 50))
+                } else {
+                    Style::default().fg(Color::Gray)
                 };
 
                 let read_marker = if notif.is_read { "" } else { T::new_marker(lang) };
@@ -1544,18 +1688,14 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
 
                 // Wrap title with selection marker
                 let title_text = format!("{}{}{}", selected_marker, read_marker, notif.title);
-                for (i, wrapped_line) in wrap_text(&title_text, text_width, "  ").into_iter().enumerate() {
-                    if i == 0 {
-                        lines.push(Line::from(Span::styled(wrapped_line, read_style)));
-                    } else {
-                        lines.push(Line::from(Span::styled(wrapped_line, read_style)));
-                    }
+                for wrapped_line in wrap_text(&title_text, text_width, "  ") {
+                    lines.push(Line::from(Span::styled(wrapped_line, style)));
                 }
 
                 // Wrap body if present
                 if let Some(ref body) = notif.body {
                     for wrapped_line in wrap_text(body, text_width, "      ") {
-                        lines.push(Line::from(Span::styled(wrapped_line, Style::default().fg(Color::Gray))));
+                        lines.push(Line::from(Span::styled(wrapped_line, body_style)));
                     }
                 }
 
@@ -1564,9 +1704,10 @@ fn draw_notifications(frame: &mut Frame, app: &App, area: Rect) {
                     .map(|p| format!("[{}] ", p))
                     .unwrap_or_default();
 
+                let meta_bg = if is_selected { Color::Rgb(40, 40, 50) } else { Color::Reset };
                 lines.push(Line::from(vec![
-                    Span::styled(format!("      {}", pupil_info), Style::default().fg(Color::Cyan)),
-                    Span::styled(notif.date.clone(), Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!("      {}", pupil_info), Style::default().fg(Color::Cyan).bg(meta_bg)),
+                    Span::styled(notif.date.clone(), Style::default().fg(Color::DarkGray).bg(meta_bg)),
                 ]));
 
                 lines.push(Line::from(""));
@@ -1669,6 +1810,21 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
                 crate::i18n::Lang::Bg => "Български",
                 crate::i18n::Lang::En => "English",
             },
+            Style::default().fg(Color::Cyan),
+        ),
+    ])));
+
+    items.push(ListItem::new(""));
+
+    // Auto-refresh interval
+    items.push(ListItem::new(Line::from(vec![
+        Span::styled("  [A] ", Style::default().fg(Color::Yellow)),
+        Span::raw(match lang {
+            crate::i18n::Lang::Bg => "Автоматично обновяване: ",
+            crate::i18n::Lang::En => "Auto-refresh: ",
+        }),
+        Span::styled(
+            app.auto_refresh_interval.label(lang),
             Style::default().fg(Color::Cyan),
         ),
     ])));
@@ -1803,14 +1959,6 @@ fn parse_time(time_str: &str) -> (i32, i32) {
         (h, m)
     } else {
         (0, 0)
-    }
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.chars().count() > max_len {
-        format!("{}...", s.chars().take(max_len - 3).collect::<String>())
-    } else {
-        s.to_string()
     }
 }
 
