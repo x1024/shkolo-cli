@@ -37,6 +37,30 @@ pub struct Feedback {
 }
 
 impl Feedback {
+    /// Parse DD.MM.YYYY date into (year, month, day) for comparison
+    /// Returns (0, 0, 0) if parsing fails
+    pub fn parse_date(date: &str) -> (u32, u32, u32) {
+        let parts: Vec<&str> = date.split('.').collect();
+        if parts.len() == 3 {
+            let day = parts[0].parse().unwrap_or(0);
+            let month = parts[1].parse().unwrap_or(0);
+            let year = parts[2].parse().unwrap_or(0);
+            (year, month, day)
+        } else {
+            (0, 0, 0)
+        }
+    }
+
+    /// Compare two feedbacks by date (newest first)
+    pub fn cmp_by_date(a: &Feedback, b: &Feedback) -> std::cmp::Ordering {
+        let a_date = Self::parse_date(&a.date);
+        let b_date = Self::parse_date(&b.date);
+        // Reverse comparison for newest first
+        b_date.cmp(&a_date)
+            .then_with(|| a.subject.cmp(&b.subject))
+            .then_with(|| a.id.cmp(&b.id))
+    }
+
     pub fn from_raw(raw: &FeedbackRaw) -> Self {
         // Date is already in DD.MM.YYYY format from API
         let date = raw.created_date.clone().unwrap_or_else(|| "N/A".to_string());
@@ -163,6 +187,72 @@ mod tests {
 
         assert!(feedback.is_positive); // Defaults to positive
         assert_eq!(feedback.date, "N/A"); // Missing date shows N/A
+    }
+
+    #[test]
+    fn test_feedback_date_parsing() {
+        // Valid date
+        assert_eq!(Feedback::parse_date("19.02.2026"), (2026, 2, 19));
+        assert_eq!(Feedback::parse_date("01.12.2025"), (2025, 12, 1));
+
+        // Invalid date
+        assert_eq!(Feedback::parse_date("N/A"), (0, 0, 0));
+        assert_eq!(Feedback::parse_date(""), (0, 0, 0));
+        assert_eq!(Feedback::parse_date("invalid"), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_feedback_sorting_newest_first() {
+        let mut feedbacks = vec![
+            Feedback {
+                id: 1,
+                badge_name: "Old".to_string(),
+                badge_icon: None,
+                comment: None,
+                is_positive: true,
+                date: "01.01.2025".to_string(), // Oldest
+                teacher: "Teacher".to_string(),
+                subject: "Math".to_string(),
+            },
+            Feedback {
+                id: 2,
+                badge_name: "Middle".to_string(),
+                badge_icon: None,
+                comment: None,
+                is_positive: true,
+                date: "15.06.2025".to_string(), // Middle
+                teacher: "Teacher".to_string(),
+                subject: "Math".to_string(),
+            },
+            Feedback {
+                id: 3,
+                badge_name: "New".to_string(),
+                badge_icon: None,
+                comment: None,
+                is_positive: true,
+                date: "19.02.2026".to_string(), // Newest
+                teacher: "Teacher".to_string(),
+                subject: "Math".to_string(),
+            },
+            Feedback {
+                id: 4,
+                badge_name: "December".to_string(),
+                badge_icon: None,
+                comment: None,
+                is_positive: true,
+                date: "31.12.2025".to_string(), // December 2025
+                teacher: "Teacher".to_string(),
+                subject: "Math".to_string(),
+            },
+        ];
+
+        feedbacks.sort_by(Feedback::cmp_by_date);
+
+        // Should be sorted newest first: 19.02.2026, 31.12.2025, 15.06.2025, 01.01.2025
+        assert_eq!(feedbacks[0].id, 3, "Newest should be first");
+        assert_eq!(feedbacks[1].id, 4, "December 2025 should be second");
+        assert_eq!(feedbacks[2].id, 2, "June 2025 should be third");
+        assert_eq!(feedbacks[3].id, 1, "January 2025 should be last");
     }
 
     #[test]
