@@ -962,15 +962,16 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
         if data.absences.is_empty() {
             vec![ListItem::new(format!("  {}", T::no_absences(lang)))]
         } else {
-            let mut items = Vec::new();
+            // Build all items first, then apply scroll to entire list
+            let mut all_items: Vec<(Vec<Line>, bool)> = Vec::new(); // (lines, is_selectable)
 
             // Calculate totals
             let total_excused = data.absences.iter().filter(|a| a.is_excused).count();
             let total_unexcused = data.absences.iter().filter(|a| !a.is_excused).count();
             let total = data.absences.len();
 
-            // Overall summary
-            items.push(ListItem::new(Line::from(vec![
+            // Overall summary (not selectable)
+            all_items.push((vec![Line::from(vec![
                 Span::styled(
                     format!("  {}: ", match lang { crate::i18n::Lang::Bg => "Общо", crate::i18n::Lang::En => "Total" }),
                     Style::default().add_modifier(Modifier::BOLD),
@@ -984,9 +985,9 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(", "),
                 Span::styled(format!("{} {}", total_unexcused, T::unexcused(lang)), Style::default().fg(Color::Red)),
                 Span::raw(")"),
-            ])));
+            ])], false));
 
-            items.push(ListItem::new(""));
+            all_items.push((vec![Line::from("")], false));
 
             // Per-subject summary
             let mut subject_counts: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
@@ -1000,7 +1001,6 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
             }
 
             let mut subjects: Vec<_> = subject_counts.into_iter().collect();
-            // Stable sort: by total descending, then by subject name for ties
             subjects.sort_by(|a, b| {
                 let total_a = a.1.0 + a.1.1;
                 let total_b = b.1.0 + b.1.1;
@@ -1009,7 +1009,7 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
 
             for (subject, (excused, unexcused)) in &subjects {
                 let total_subj = excused + unexcused;
-                items.push(ListItem::new(Line::from(vec![
+                all_items.push((vec![Line::from(vec![
                     Span::raw("  "),
                     Span::styled(format!("{}: ", subject), Style::default().add_modifier(Modifier::BOLD)),
                     Span::styled(format!("{} ", total_subj), Style::default()),
@@ -1018,42 +1018,48 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw("/"),
                     Span::styled(format!("{}", unexcused), Style::default().fg(Color::Red)),
                     Span::raw(")"),
-                ])));
+                ])], false));
             }
 
-            items.push(ListItem::new(""));
-            items.push(ListItem::new(Line::from(Span::styled(
+            all_items.push((vec![Line::from("")], false));
+            all_items.push((vec![Line::from(Span::styled(
                 "  ─────────────────────────────",
                 Style::default().fg(Color::DarkGray),
-            ))));
-            items.push(ListItem::new(""));
+            ))], false));
+            all_items.push((vec![Line::from("")], false));
 
-            // Detailed list grouped by date (scrollable)
+            // Detailed list grouped by date - these are selectable
             let mut current_date = String::new();
+            let mut absence_index = 0usize;
 
-            // Calculate scroll position with center-biased scrolling
-            let estimated_item_height = 2;
-            let visible_items = (area.height as usize / estimated_item_height).max(1);
-            let scroll = calculate_scroll(app.list_offset, visible_items, data.absences.len());
-
-            for absence in data.absences.iter().skip(scroll) {
-                // Add date header if new date
+            for absence in &data.absences {
+                // Add date header if new date (not selectable)
                 if absence.date != current_date {
                     if !current_date.is_empty() {
-                        items.push(ListItem::new("")); // Spacer
+                        all_items.push((vec![Line::from("")], false));
                     }
-                    items.push(ListItem::new(Line::from(Span::styled(
+                    all_items.push((vec![Line::from(Span::styled(
                         format!("  {}", absence.date),
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                    ))));
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ))], false));
                     current_date = absence.date.clone();
                 }
 
-                // Absence entry
+                // Absence entry (selectable)
+                let is_selected = absence_index == app.list_offset;
+                let bg = if is_selected { Color::Rgb(40, 40, 50) } else { Color::Reset };
+                let selected_marker = if is_selected { "▸ " } else { "  " };
+
                 let status_style = if absence.is_excused {
-                    Style::default().fg(Color::Green)
+                    Style::default().fg(Color::Green).bg(bg)
                 } else {
-                    Style::default().fg(Color::Red)
+                    Style::default().fg(Color::Red).bg(bg)
+                };
+
+                let subject_style = if is_selected {
+                    Style::default().fg(Color::Yellow).bg(bg).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().bg(bg).add_modifier(Modifier::BOLD)
                 };
 
                 let status_text = if absence.is_excused {
@@ -1064,30 +1070,39 @@ fn draw_absences(frame: &mut Frame, app: &App, area: Rect) {
 
                 let hour_label = T::hour_label(lang);
 
-                items.push(ListItem::new(vec![
+                let mut lines = vec![
                     Line::from(vec![
-                        Span::raw(format!("    {} {}: ", hour_label, absence.hour)),
-                        Span::styled(absence.subject.clone(), Style::default().add_modifier(Modifier::BOLD)),
-                        Span::raw(" - "),
+                        Span::styled(format!("  {}{} {}: ", selected_marker, hour_label, absence.hour), Style::default().bg(bg)),
+                        Span::styled(absence.subject.clone(), subject_style),
+                        Span::styled(" - ", Style::default().bg(bg)),
                         Span::styled(status_text, status_style),
                     ]),
-                ]));
+                ];
 
                 // Show excuse reason if present
                 if let Some(ref reason) = absence.excuse_reason {
                     if !reason.is_empty() {
                         let wrapped = wrap_text(reason, (area.width as usize).saturating_sub(10), "      ");
                         for line in wrapped {
-                            items.push(ListItem::new(Line::from(Span::styled(
-                                line,
-                                Style::default().fg(Color::DarkGray),
-                            ))));
+                            lines.push(Line::from(Span::styled(line, Style::default().fg(Color::DarkGray).bg(bg))));
                         }
                     }
                 }
+
+                all_items.push((lines, true));
+                absence_index += 1;
             }
 
-            items
+            // Calculate scroll for entire list
+            let estimated_item_height = 2;
+            let visible_items = (area.height as usize / estimated_item_height).max(1);
+            let scroll = calculate_scroll(app.list_offset, visible_items, all_items.len());
+
+            // Convert to ListItems with scroll applied
+            all_items.into_iter()
+                .skip(scroll)
+                .map(|(lines, _)| ListItem::new(lines))
+                .collect()
         }
     } else {
         vec![ListItem::new(format!("  {}", T::no_student(lang)))]
