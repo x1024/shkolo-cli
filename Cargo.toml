@@ -6,8 +6,8 @@ description = "CLI for Shkolo.bg - Bulgarian school management system"
 authors = ["Shkolo CLI"]
 
 [dependencies]
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime (only features we actually use)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "cookies"] }
@@ -40,8 +40,20 @@ thiserror = "1"
 # Password input
 rpassword = "7"
 
+# Fast dev builds
+[profile.dev]
+opt-level = 0
+debug = 1          # Limited debug info (faster)
+
+# Fast release builds for development (use this with: cargo build --release)
 [profile.release]
 opt-level = 3
+lto = "thin"       # Much faster than full LTO, still good optimization
+codegen-units = 16 # Parallel compilation
+strip = true
+
+# Slow but smallest/fastest binary (use: cargo build --profile dist)
+[profile.dist]
+inherits = "release"
 lto = true
 codegen-units = 1
-strip = true

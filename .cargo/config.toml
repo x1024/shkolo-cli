@@ -1,0 +1,15 @@
+# Build optimizations
+[build]
+# Use all CPU cores for compilation
+jobs = 8
+
+# Faster incremental builds
+[profile.dev.package."*"]
+opt-level = 0
+debug = false
+
+# For even faster builds, install mold: brew install mold
+# Then uncomment:
+# [target.aarch64-apple-darwin]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
