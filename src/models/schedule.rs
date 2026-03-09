@@ -18,6 +18,7 @@ pub struct ScheduleHourRaw {
     pub from_time: Option<String>,
     pub to_time: Option<String>,
     pub course_name: Option<String>,
+    pub course_type_name: Option<String>,
     pub teacher_name: Option<String>,
     pub topic: Option<String>,
     pub homework_text: Option<String>,
@@ -67,7 +68,13 @@ impl ScheduleHour {
             hour_number: raw.school_hour.unwrap_or(0),
             from_time: raw.from_time.clone().unwrap_or_default(),
             to_time: raw.to_time.clone().unwrap_or_default(),
-            subject: raw.course_name.clone().unwrap_or_else(|| "Unknown".to_string()),
+            subject: {
+                let name = raw.course_name.clone().unwrap_or_else(|| "Unknown".to_string());
+                match &raw.course_type_name {
+                    Some(t) if !t.is_empty() => format!("{} ({})", name, t),
+                    _ => name,
+                }
+            },
             teacher: raw.teacher_name.clone(),
             topic: raw.topic.clone(),
             homework: raw.homework_text.clone(),

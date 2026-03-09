@@ -16,6 +16,7 @@ pub struct FeedbackRaw {
     /// Subject name
     pub course_name: Option<String>,
     pub course_short_name: Option<String>,
+    pub course_type_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,9 +77,15 @@ impl Feedback {
             is_positive,
             date,
             teacher: raw.created_by.clone().unwrap_or_default(),
-            subject: raw.course_short_name.clone()
-                .or_else(|| raw.course_name.clone())
-                .unwrap_or_default(),
+            subject: {
+                let base = raw.course_name.clone()
+                    .or_else(|| raw.course_short_name.clone())
+                    .unwrap_or_default();
+                match &raw.course_type_name {
+                    Some(t) if !t.is_empty() => format!("{} ({})", base, t),
+                    _ => base,
+                }
+            },
         }
     }
 
@@ -139,6 +146,7 @@ mod tests {
             created_by: Some("Teacher Name".to_string()),
             course_name: Some("Mathematics".to_string()),
             course_short_name: Some("Math".to_string()),
+            course_type_name: Some("ООП".to_string()),
         };
 
         let feedback = Feedback::from_raw(&raw);
@@ -146,7 +154,7 @@ mod tests {
         assert!(feedback.is_positive);
         assert_eq!(feedback.badge_name, "Excellent work");
         assert_eq!(feedback.date, "19.02.2026");
-        assert_eq!(feedback.subject, "Math"); // Uses short name if available
+        assert_eq!(feedback.subject, "Mathematics (ООП)");
     }
 
     #[test]
@@ -161,12 +169,13 @@ mod tests {
             created_by: Some("Teacher Name".to_string()),
             course_name: Some("English".to_string()),
             course_short_name: None,
+            course_type_name: None,
         };
 
         let feedback = Feedback::from_raw(&raw);
 
         assert!(!feedback.is_positive);
-        assert_eq!(feedback.subject, "English"); // Falls back to course_name
+        assert_eq!(feedback.subject, "English");
     }
 
     #[test]
@@ -181,6 +190,7 @@ mod tests {
             created_by: None,
             course_name: None,
             course_short_name: None,
+            course_type_name: None,
         };
 
         let feedback = Feedback::from_raw(&raw);

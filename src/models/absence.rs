@@ -7,6 +7,7 @@ pub struct AbsenceRaw {
     pub school_hour: Option<i32>,
     pub course_name: Option<String>,
     pub course_short_name: Option<String>,
+    pub course_type_name: Option<String>,
     pub absence_type_id: Option<i32>,
     pub absence_excuse_type_id: Option<i32>,
     pub absence_comment: Option<String>,
@@ -55,9 +56,15 @@ impl Absence {
             date,
             date_sort,
             hour: raw.school_hour.unwrap_or(0),
-            subject: raw.course_short_name.clone()
-                .or_else(|| raw.course_name.clone())
-                .unwrap_or_else(|| "Unknown".to_string()),
+            subject: {
+                let base = raw.course_short_name.clone()
+                    .or_else(|| raw.course_name.clone())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                match &raw.course_type_name {
+                    Some(t) if !t.is_empty() => format!("{} ({})", base, t),
+                    _ => base,
+                }
+            },
             is_excused,
             excuse_reason: raw.absence_comment.clone(),
             created_by: raw.created_by.clone(),

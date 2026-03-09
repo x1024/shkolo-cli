@@ -1086,7 +1086,11 @@ async fn cache_command(cache: &CacheStore, clear: bool, clear_all: bool, refresh
                             if counts.get(&cyc_group_id.to_string()).copied().unwrap_or(0) == 0 {
                                 continue;
                             }
-                            let subject = course.course_short_name.or(course.course_name).unwrap_or_default();
+                            let base = course.course_name.or(course.course_short_name).unwrap_or_default();
+                            let subject = match course.course_type_name {
+                                Some(ref t) if !t.is_empty() => format!("{} ({})", base, t),
+                                _ => base,
+                            };
                             if let Ok(hw_response) = client.get_homework_list(cyc_group_id).await {
                                 if let Some(items) = hw_response.homeworks {
                                     for item in items {
@@ -1205,9 +1209,13 @@ async fn get_homework(
                     continue;
                 }
 
-                let subject = course.course_short_name
-                    .or(course.course_name)
+                let base = course.course_name
+                    .or(course.course_short_name)
                     .unwrap_or_else(|| "Unknown".to_string());
+                let subject = match &course.course_type_name {
+                    Some(t) if !t.is_empty() => format!("{} ({})", base, t),
+                    _ => base,
+                };
 
                 if let Ok(hw_response) = client.get_homework_list(cyc_group_id).await {
                     if let Some(homeworks) = hw_response.homeworks {

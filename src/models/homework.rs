@@ -18,6 +18,7 @@ pub struct HomeworkCourse {
     pub cyc_group_id: Option<i64>,
     pub course_name: Option<String>,
     pub course_short_name: Option<String>,
+    pub course_type_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
