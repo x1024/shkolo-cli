@@ -172,6 +172,7 @@ impl Tab {
 pub enum Focus {
     Students,
     Content,
+    SchoolYears,
     // Overview tab sub-panes
     OverviewSchedule,
     OverviewHomework,
@@ -299,6 +300,9 @@ pub struct App {
     // Navigation history (for back/forward)
     nav_history: Vec<Location>,
     nav_index: usize,  // Current position in history
+    // School year selection
+    pub school_years: Vec<SchoolYear>,
+    pub selected_school_year: usize,
 }
 
 impl App {
@@ -360,6 +364,9 @@ impl App {
                 selected_thread_id: None,
             }],
             nav_index: 0,
+            // School years
+            school_years: Vec::new(),
+            selected_school_year: 0,
         }
     }
 
@@ -405,13 +412,50 @@ impl App {
         self.students.len() > 1
     }
 
-    /// Get effective students pane width (0 if pane is hidden)
+    /// Check if the school years pane should be shown
+    pub fn has_school_years_pane(&self) -> bool {
+        self.school_years.len() > 1
+    }
+
+    /// Get the currently selected school year
+    pub fn current_school_year(&self) -> Option<&SchoolYear> {
+        self.school_years.get(self.selected_school_year)
+    }
+
+    /// Select next school year
+    pub fn next_school_year(&mut self) {
+        if !self.school_years.is_empty() {
+            self.selected_school_year = (self.selected_school_year + 1) % self.school_years.len();
+        }
+    }
+
+    /// Select previous school year
+    pub fn prev_school_year(&mut self) {
+        if !self.school_years.is_empty() {
+            self.selected_school_year = if self.selected_school_year == 0 {
+                self.school_years.len() - 1
+            } else {
+                self.selected_school_year - 1
+            };
+        }
+    }
+
+    /// Get effective sidebar width (0 if no sidebar pane is visible)
     pub fn effective_students_width(&self) -> u16 {
-        if self.has_students_pane() {
+        if self.has_students_pane() || self.has_sidebar() {
             self.students_pane_width
         } else {
             0
         }
+    }
+
+    /// Check if any sidebar pane should be shown for the current tab
+    fn has_sidebar(&self) -> bool {
+        // Same tabs that are excluded from students pane
+        if matches!(self.current_tab, Tab::Notifications | Tab::Settings | Tab::Messages) {
+            return false;
+        }
+        self.has_school_years_pane()
     }
 
     // Navigation history methods
@@ -723,14 +767,48 @@ impl App {
 
         let relative_row = (row - header_offset - pane_border) as usize;
 
-        // Check if click is in students pane (left side)
+        // Check if click is in sidebar (left side)
         if column < students_width {
-            self.focus = Focus::Students;
-            // Clicking on a student selects them
-            if relative_row < self.students.len() {
-                self.selected_student = relative_row;
-                self.list_offset = 0;
-                return ClickResult::StudentSelected;
+            // If we have both students and school years, determine which pane was clicked
+            let show_students = self.has_students_pane();
+            let show_years = self.has_school_years_pane();
+
+            if show_students && show_years {
+                // School years pane is at the bottom of the sidebar
+                let years_height = (self.school_years.len() as u16 + 2).min(10);
+                let sidebar_height = content_height;
+                let students_height = sidebar_height.saturating_sub(years_height);
+                let click_row_in_sidebar = row.saturating_sub(header_offset);
+
+                if click_row_in_sidebar >= students_height {
+                    // Click is in school years pane
+                    self.focus = Focus::SchoolYears;
+                    let year_row = (click_row_in_sidebar - students_height).saturating_sub(1) as usize; // -1 for border
+                    if year_row < self.school_years.len() {
+                        self.selected_school_year = year_row;
+                        if let Some(year) = self.current_school_year() {
+                            return ClickResult::SchoolYearChanged(year.id);
+                        }
+                    }
+                    return ClickResult::None;
+                }
+            }
+
+            if show_students {
+                self.focus = Focus::Students;
+                if relative_row < self.students.len() {
+                    self.selected_student = relative_row;
+                    self.list_offset = 0;
+                    return ClickResult::StudentSelected;
+                }
+            } else if show_years {
+                self.focus = Focus::SchoolYears;
+                if relative_row < self.school_years.len() {
+                    self.selected_school_year = relative_row;
+                    if let Some(year) = self.current_school_year() {
+                        return ClickResult::SchoolYearChanged(year.id);
+                    }
+                }
             }
             return ClickResult::None;
         }
@@ -783,37 +861,53 @@ impl App {
 
     pub fn toggle_focus(&mut self) {
         let has_students = self.has_students_pane();
+        let has_years = self.has_school_years_pane();
 
         self.focus = match self.current_tab {
             Tab::Overview => {
                 if has_students {
-                    // Cycle: Students -> Schedule -> Homework -> Grades -> Students
+                    // Cycle: Students -> SchoolYears? -> Schedule -> Homework -> Grades -> Students
                     match self.focus {
-                        Focus::Students => Focus::OverviewSchedule,
+                        Focus::Students => {
+                            if has_years { Focus::SchoolYears } else { Focus::OverviewSchedule }
+                        }
+                        Focus::SchoolYears => Focus::OverviewSchedule,
                         Focus::OverviewSchedule => Focus::OverviewHomework,
                         Focus::OverviewHomework => Focus::OverviewGrades,
                         Focus::OverviewGrades => Focus::Students,
                         _ => Focus::OverviewSchedule,
                     }
                 } else {
-                    // No students pane: Schedule -> Homework -> Grades -> Schedule
+                    // No students pane: SchoolYears? -> Schedule -> Homework -> Grades -> ...
                     match self.focus {
+                        Focus::SchoolYears => Focus::OverviewSchedule,
                         Focus::OverviewSchedule => Focus::OverviewHomework,
                         Focus::OverviewHomework => Focus::OverviewGrades,
-                        Focus::OverviewGrades => Focus::OverviewSchedule,
+                        Focus::OverviewGrades => {
+                            if has_years { Focus::SchoolYears } else { Focus::OverviewSchedule }
+                        }
                         _ => Focus::OverviewSchedule,
                     }
                 }
             }
             _ => {
                 if has_students {
-                    // Other tabs: Students -> Content -> Students
+                    // Students -> SchoolYears? -> Content -> Students
                     match self.focus {
-                        Focus::Students => Focus::Content,
+                        Focus::Students => {
+                            if has_years { Focus::SchoolYears } else { Focus::Content }
+                        }
+                        Focus::SchoolYears => Focus::Content,
                         _ => Focus::Students,
                     }
+                } else if has_years {
+                    // SchoolYears -> Content -> SchoolYears
+                    match self.focus {
+                        Focus::SchoolYears => Focus::Content,
+                        _ => Focus::SchoolYears,
+                    }
                 } else {
-                    // No students pane: stay on Content
+                    // No sidebar panes: stay on Content
                     Focus::Content
                 }
             }
@@ -1504,6 +1598,7 @@ pub enum ClickResult {
     ItemSelected(usize),         // Item index selected
     ActivateNotification(usize), // Notification index to activate
     ActivateMessage(usize),      // Message index to open
+    SchoolYearChanged(i64),      // School year changed
 }
 
 #[cfg(test)]
@@ -1963,6 +2058,7 @@ mod tests {
         app.overview_bottom_split_percent = 60; // Homework takes 60% of bottom (rows 10-15), grades (rows 16-19)
         app.students = vec![
             StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
         ];
 
         let header_offset = 3;

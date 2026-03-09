@@ -18,6 +18,8 @@ pub enum Action {
     // Navigation history
     NavigateBack,          // Go back in history (may need to reload data)
     NavigateForward,       // Go forward in history (may need to reload data)
+    // School year
+    SchoolYearChanged(i64), // School year ID changed
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
@@ -110,6 +112,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Down | KeyCode::Char('j') => {
             match app.focus {
                 Focus::Students => app.next_student(),
+                Focus::SchoolYears => {
+                    app.next_school_year();
+                    if let Some(year) = app.current_school_year() {
+                        return Action::SchoolYearChanged(year.id);
+                    }
+                }
                 _ => app.scroll_down(),
             }
             Action::None
@@ -117,6 +125,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Up | KeyCode::Char('k') => {
             match app.focus {
                 Focus::Students => app.prev_student(),
+                Focus::SchoolYears => {
+                    app.prev_school_year();
+                    if let Some(year) = app.current_school_year() {
+                        return Action::SchoolYearChanged(year.id);
+                    }
+                }
                 _ => app.scroll_up(),
             }
             Action::None

@@ -197,17 +197,35 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
 
     // Only show students pane if there's more than one student
     let show_students_pane = app.students.len() > 1;
+    let show_years_pane = app.has_school_years_pane();
 
-    let content_area = if show_students_pane {
+    let content_area = if show_students_pane || show_years_pane {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(app.students_pane_width),  // Resizable students list
+                Constraint::Length(app.students_pane_width),  // Resizable sidebar
                 Constraint::Min(40),     // Main content
             ])
             .split(area);
 
-        draw_students_list(frame, app, chunks[0]);
+        // Split sidebar vertically: students on top, school years on bottom
+        if show_students_pane && show_years_pane {
+            let years_height = (app.school_years.len() as u16 + 2).min(10); // +2 for borders
+            let sidebar = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(5),                    // Students
+                    Constraint::Length(years_height),       // School years
+                ])
+                .split(chunks[0]);
+            draw_students_list(frame, app, sidebar[0]);
+            draw_school_years_list(frame, app, sidebar[1]);
+        } else if show_students_pane {
+            draw_students_list(frame, app, chunks[0]);
+        } else {
+            draw_school_years_list(frame, app, chunks[0]);
+        }
+
         chunks[1]
     } else {
         area
@@ -261,6 +279,49 @@ fn draw_students_list(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let title = format!(" {} ", T::students(lang));
+    let list = List::new(items)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title));
+
+    frame.render_widget(list, area);
+}
+
+fn draw_school_years_list(frame: &mut Frame, app: &App, area: Rect) {
+    let lang = app.lang;
+    let is_focused = app.focus == Focus::SchoolYears;
+
+    let items: Vec<ListItem> = app.school_years
+        .iter()
+        .enumerate()
+        .map(|(i, year)| {
+            let is_selected = i == app.selected_school_year;
+            let style = if is_selected {
+                if is_focused {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                }
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            let prefix = if is_selected { "> " } else { "  " };
+            let fallback = format!("#{}", year.id);
+            let name = year.name.as_deref().unwrap_or(&fallback);
+            ListItem::new(format!("{}{}", prefix, name))
+                .style(style)
+        })
+        .collect();
+
+    let border_style = if is_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
+    let title = format!(" {} ", T::school_years(lang));
     let list = List::new(items)
         .block(Block::default()
             .borders(Borders::ALL)

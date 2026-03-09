@@ -772,6 +772,46 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                     }
                                     app.loading = false;
                                 }
+                                Action::SchoolYearChanged(year_id) if background_task.is_none() => {
+                                    let prev_year = client.school_year();
+                                    let prev_selected = app.selected_school_year;
+                                    client.set_school_year(year_id);
+
+                                    // Verify the new year works before committing
+                                    app.set_status(format!("{}: {}/{}...", T::school_year(app.lang), year_id - 1, year_id));
+                                    terminal.draw(|f| draw(f, &app))?;
+
+                                    match client.verify_auth().await {
+                                        Ok(_) => {
+                                            // Persist the new school year in token
+                                            if let Ok(mut token_data) = cache.load_token() {
+                                                token_data.school_year = Some(year_id);
+                                                let _ = cache.save_token_full(&token_data);
+                                            }
+
+                                            // Clear data cache and trigger refresh
+                                            let _ = cache.clear();
+                                            app.loading = true;
+                                            app.set_status(format!("{}: {}/{}", T::school_year(app.lang), year_id - 1, year_id));
+                                            let client_clone = client.clone();
+                                            let cache_clone = cache.clone();
+                                            let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
+                                            background_task = Some(Box::pin(async move {
+                                                refresh_data_background(&client_clone, &cache_clone, true, student_ids).await
+                                            }));
+                                            last_auto_refresh = std::time::Instant::now();
+                                        }
+                                        Err(_) => {
+                                            // Revert to previous year
+                                            if let Some(y) = prev_year {
+                                                client.set_school_year(y);
+                                            }
+                                            app.selected_school_year = prev_selected;
+                                            let year_name = format!("{}/{}", year_id - 1, year_id);
+                                            app.set_error(T::cli_year_unavailable(app.lang, &year_name));
+                                        }
+                                    }
+                                }
                                 Action::NavigateBack | Action::NavigateForward => {
                                     // Navigation was handled in the handler, but we may need
                                     // to reload thread messages if we navigated to a thread view
@@ -799,7 +839,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                 Action::None => {}
                                 // These are handled by guards above (when background_task.is_none())
                                 // If we get here, a background task is already running
-                                Action::Refresh | Action::RefreshAll | Action::RefreshSchedule => {
+                                Action::Refresh | Action::RefreshAll | Action::RefreshSchedule | Action::SchoolYearChanged(_) => {
                                     // Already refreshing, ignore
                                 }
                             }
@@ -852,6 +892,43 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                                             Err(e) => {
                                                                 app.set_error(format!("{}\n{}", T::failed_load_thread(app.lang), e));
                                                                 app.close_thread();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                ClickResult::SchoolYearChanged(year_id) => {
+                                                    if background_task.is_none() {
+                                                        let prev_year = client.school_year();
+                                                        let prev_selected = app.selected_school_year;
+                                                        client.set_school_year(year_id);
+
+                                                        app.set_status(format!("{}: {}/{}...", T::school_year(app.lang), year_id - 1, year_id));
+                                                        terminal.draw(|f| draw(f, &app))?;
+
+                                                        match client.verify_auth().await {
+                                                            Ok(_) => {
+                                                                if let Ok(mut token_data) = cache.load_token() {
+                                                                    token_data.school_year = Some(year_id);
+                                                                    let _ = cache.save_token_full(&token_data);
+                                                                }
+                                                                let _ = cache.clear();
+                                                                app.loading = true;
+                                                                app.set_status(format!("{}: {}/{}", T::school_year(app.lang), year_id - 1, year_id));
+                                                                let client_clone = client.clone();
+                                                                let cache_clone = cache.clone();
+                                                                let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
+                                                                background_task = Some(Box::pin(async move {
+                                                                    refresh_data_background(&client_clone, &cache_clone, true, student_ids).await
+                                                                }));
+                                                                last_auto_refresh = std::time::Instant::now();
+                                                            }
+                                                            Err(_) => {
+                                                                if let Some(y) = prev_year {
+                                                                    client.set_school_year(y);
+                                                                }
+                                                                app.selected_school_year = prev_selected;
+                                                                let year_name = format!("{}/{}", year_id - 1, year_id);
+                                                                app.set_error(T::cli_year_unavailable(app.lang, &year_name));
                                                             }
                                                         }
                                                     }
