@@ -46,13 +46,6 @@ shkolo login
 shkolo login -u вашият@email.com -p вашатапарола
 ```
 
-### Вариант 3: Вход с Google
-
-```bash
-shkolo login-google
-# Следвайте OAuth процеса в браузъра
-```
-
 ### Проверка на статуса
 
 ```bash
