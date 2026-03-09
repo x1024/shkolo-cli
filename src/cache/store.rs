@@ -12,6 +12,7 @@ const DEFAULT_TTL_SECONDS: i64 = 3600; // 1 hour
 pub struct UiConfig {
     pub students_pane_width: Option<u16>,
     pub overview_split_percent: Option<u16>,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +20,10 @@ pub struct TokenData {
     pub token: String,
     pub school_year: Option<i64>,
     pub user_data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub auth_type: Option<String>,
+    #[serde(default)]
+    pub xsrf_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,8 +125,14 @@ impl CacheStore {
             token: token.to_string(),
             school_year,
             user_data,
+            auth_type: None,
+            xsrf_token: None,
         };
         self.write_file("token", &data)
+    }
+
+    pub fn save_token_full(&self, data: &TokenData) -> Result<()> {
+        self.write_file("token", data)
     }
 
     pub fn clear_token(&self) -> Result<()> {

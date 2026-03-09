@@ -21,7 +21,7 @@ use std::future::Future;
 
 use api::ShkoloClient;
 use cache::CacheStore;
-use i18n::T;
+use i18n::{Lang, T};
 use models::*;
 use tui::{App, draw, handle_key, handlers::Action, app::{ClickResult, StudentData}};
 
@@ -62,6 +62,10 @@ struct Cli {
     /// Cache TTL in seconds (default: 3600)
     #[arg(long, global = true)]
     cache_ttl: Option<i64>,
+
+    /// Language (bg or en)
+    #[arg(long, global = true)]
+    lang: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -100,11 +104,28 @@ enum Commands {
         token: Option<String>,
     },
 
+    /// Login with web cookie from app.shkolo.bg
+    LoginWeb {
+        /// The shkolo-cookie value from browser DevTools
+        #[arg(long)]
+        cookie: String,
+
+        /// Optional XSRF-TOKEN value from browser DevTools
+        #[arg(long)]
+        xsrf_token: Option<String>,
+    },
+
     /// Logout and clear token
     Logout,
 
     /// Show authentication status
     Status,
+
+    /// Set default language (bg or en)
+    SetLang {
+        /// Language code: bg or en
+        language: String,
+    },
 
     /// Cache management
     Cache {
@@ -192,18 +213,34 @@ async fn main() -> Result<()> {
 
     let cache = CacheStore::new(ttl)?;
 
+    // Resolve language: --lang flag > persisted ui_config > SHKOLO_LANG env > default (Bg)
+    let lang = if let Some(ref lang_str) = cli.lang {
+        Lang::from_str(lang_str).unwrap_or_default()
+    } else {
+        let ui_config = cache.load_ui_config();
+        if let Some(ref lang_str) = ui_config.language {
+            Lang::from_str(lang_str).unwrap_or_default()
+        } else if let Ok(env_lang) = std::env::var("SHKOLO_LANG") {
+            Lang::from_str(&env_lang).unwrap_or_default()
+        } else {
+            Lang::default()
+        }
+    };
+
     match cli.command {
         Commands::Json { command, format } => {
             run_json_command(command, &cache, cli.refresh, cli.no_cache, &format).await
         }
-        Commands::Tui => run_tui(&cache).await,
-        Commands::ImportToken => import_token(&cache),
-        Commands::Login { username, password } => login(&cache, username, password).await,
-        Commands::LoginGoogle { token } => login_google(&cache, token).await,
-        Commands::Logout => logout(&cache).await,
-        Commands::Status => show_status(&cache),
+        Commands::Tui => run_tui(&cache, lang).await,
+        Commands::ImportToken => import_token(&cache, lang),
+        Commands::Login { username, password } => login(&cache, username, password, lang).await,
+        Commands::LoginGoogle { token } => login_google(&cache, token, lang).await,
+        Commands::LoginWeb { cookie, xsrf_token } => login_web(&cache, &cookie, xsrf_token.as_deref(), lang).await,
+        Commands::Logout => logout(&cache, lang).await,
+        Commands::Status => show_status(&cache, lang),
+        Commands::SetLang { language } => set_lang(&cache, &language),
         Commands::Cache { clear, clear_all, refresh } => {
-            cache_command(&cache, clear, clear_all, refresh).await
+            cache_command(&cache, clear, clear_all, refresh, lang).await
         }
     }
 }
@@ -441,36 +478,35 @@ async fn run_json_command(
     Ok(())
 }
 
-async fn run_tui(cache: &CacheStore) -> Result<()> {
-    let client = get_authenticated_client(cache)?;
+async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
+    let mut client = get_authenticated_client(cache)?;
 
-    // Setup terminal with mouse support
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    // Create app
+    // Create app (before raw mode so we can print errors)
     let mut app = App::new();
+    app.lang = lang;
 
     // Load user name from token cache
     if let Ok(token_data) = cache.load_token() {
-        if let Some(data) = token_data.user_data {
-            // Try "names" field first (from import)
-            if let Some(names) = data.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
+        if let Some(ref data) = token_data.user_data {
+            if let Some(names) = data.get("names").and_then(|v| v.as_str()) {
                 app.user_name = Some(names.to_string());
             }
-            // Try "users" array (from login)
-            else if let Some(users) = data.get("users").and_then(|v: &serde_json::Value| v.as_array()) {
-                if let Some(first) = users.first() {
-                    if let Some(names) = first.get("names").and_then(|v: &serde_json::Value| v.as_str()) {
-                        app.user_name = Some(names.to_string());
+            if app.user_name.is_none() {
+                if let Some(users) = data.get("users").and_then(|v| v.as_array()) {
+                    if let Some(first) = users.first() {
+                        if let Some(n) = first.get("user_name").and_then(|v| v.as_str()) {
+                            app.user_name = Some(n.to_string());
+                        }
                     }
                 }
             }
         }
     }
+
+    // TODO: School year selection is disabled until we figure out year-switching auth.
+    // The code in app.rs, ui.rs, handlers.rs is ready — just need to populate
+    // app.school_years here once year switching works.
+    // See: get_users_and_years() API, UserYearEntry struct, SchoolYearChanged action.
 
     // Load UI configuration (pane sizes, etc.)
     let ui_config = cache.load_ui_config();
@@ -480,6 +516,13 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
     if let Some(percent) = ui_config.overview_split_percent {
         app.overview_split_percent = percent;
     }
+
+    // Setup terminal with mouse support
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
     // Load cached data first
     app.load_from_cache(cache).await;
@@ -847,10 +890,11 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
         }
     }
 
-    // Save UI configuration (pane sizes)
+    // Save UI configuration (pane sizes + language)
     let ui_config = cache::UiConfig {
         students_pane_width: Some(app.students_pane_width),
         overview_split_percent: Some(app.overview_split_percent),
+        language: Some(app.lang.as_str().to_string()),
     };
     let _ = cache.save_ui_config(&ui_config);
 
@@ -861,7 +905,7 @@ async fn run_tui(cache: &CacheStore) -> Result<()> {
     Ok(())
 }
 
-fn import_token(cache: &CacheStore) -> Result<()> {
+fn import_token(cache: &CacheStore, lang: Lang) -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
     let ios_path = home.join(IOS_APP_STORAGE);
 
@@ -892,8 +936,8 @@ fn import_token(cache: &CacheStore) -> Result<()> {
         "id": user_id,
     })))?;
 
-    println!("Token imported successfully!");
-    println!("User: {}", user_name);
+    println!("{}", T::cli_token_imported(lang));
+    println!("{}: {}", T::cli_user(lang), user_name);
     if let Some(id) = user_id {
         println!("User ID: {}", id);
     }
@@ -901,7 +945,7 @@ fn import_token(cache: &CacheStore) -> Result<()> {
     Ok(())
 }
 
-async fn login(cache: &CacheStore, username: Option<String>, password: Option<String>) -> Result<()> {
+async fn login(cache: &CacheStore, username: Option<String>, password: Option<String>, lang: Lang) -> Result<()> {
     let username = match username {
         Some(u) => u,
         None => {
@@ -933,19 +977,17 @@ async fn login(cache: &CacheStore, username: Option<String>, password: Option<St
         Some(user_data.clone()),
     )?;
 
-    println!("Logged in successfully!");
+    println!("{}", T::cli_logged_in(lang));
 
-    if let Some(users) = response.users {
-        for user in users {
-            if let Some(name) = user.names {
-                println!("  User: {}", name);
+    if let Some(entries) = response.users {
+        // Show user name from first entry
+        if let Some(entry) = entries.first() {
+            if let Some(ref name) = entry.user_name {
+                println!("  {}: {}", T::cli_user(lang), name);
             }
-            if let Some(roles) = user.roles {
-                let role_names: Vec<_> = roles.iter()
-                    .filter_map(|r| r.role_name.clone())
-                    .collect();
-                if !role_names.is_empty() {
-                    println!("  Roles: {}", role_names.join(", "));
+            if let Some(ref roles) = entry.roles {
+                if let Some(roles_str) = roles.as_str() {
+                    println!("  {}: {}", T::cli_roles(lang), roles_str);
                 }
             }
         }
@@ -954,7 +996,7 @@ async fn login(cache: &CacheStore, username: Option<String>, password: Option<St
     Ok(())
 }
 
-async fn login_google(cache: &CacheStore, token: Option<String>) -> Result<()> {
+async fn login_google(cache: &CacheStore, token: Option<String>, lang: Lang) -> Result<()> {
     let id_token = match token {
         Some(t) => t,
         None => {
@@ -993,72 +1035,134 @@ async fn login_google(cache: &CacheStore, token: Option<String>) -> Result<()> {
         Some(user_data),
     )?;
 
-    println!("Logged in with Google successfully!");
+    println!("{}", T::cli_logged_in_google(lang));
 
     Ok(())
 }
 
-async fn logout(cache: &CacheStore) -> Result<()> {
+async fn login_web(cache: &CacheStore, cookie: &str, xsrf_token: Option<&str>, lang: Lang) -> Result<()> {
+    let client = ShkoloClient::with_cookie(
+        cookie.to_string(),
+        xsrf_token.map(|s| s.to_string()),
+        None,
+    );
+
+    // Verify cookie works by probing the API
+    match client.verify_auth().await {
+        Ok(_) => {
+            // Try to get school year info
+            let mut school_year = None;
+            if let Ok(users_response) = client.get_users_and_years().await {
+                if let Some(ref entries) = users_response.users {
+                    // Prefer the isSelected entry
+                    if let Some(selected) = entries.iter().find(|e| e.is_selected == Some(true)) {
+                        school_year = selected.school_year;
+                    } else {
+                        school_year = entries.iter().filter_map(|e| e.school_year).max();
+                    }
+                }
+            }
+
+            let token_data = cache::TokenData {
+                token: cookie.to_string(),
+                school_year,
+                user_data: None,
+                auth_type: Some("cookie".to_string()),
+                xsrf_token: xsrf_token.map(|s| s.to_string()),
+            };
+            cache.save_token_full(&token_data)?;
+
+            println!("{}", T::cli_logged_in_web(lang));
+            Ok(())
+        }
+        Err(_) => {
+            eprintln!("{}", T::cli_web_login_failed(lang));
+            Err(anyhow!("Web authentication failed"))
+        }
+    }
+}
+
+async fn logout(cache: &CacheStore, lang: Lang) -> Result<()> {
     if let Ok(token_data) = cache.load_token() {
         let mut client = ShkoloClient::with_token(token_data.token, token_data.school_year);
         let _ = client.logout().await;
     }
 
     cache.clear_token()?;
-    println!("Logged out successfully!");
+    println!("{}", T::cli_logged_out(lang));
 
     Ok(())
 }
 
-fn show_status(cache: &CacheStore) -> Result<()> {
+fn show_status(cache: &CacheStore, lang: Lang) -> Result<()> {
     match cache.load_token() {
         Ok(token_data) => {
-            println!("Status: Authenticated");
+            println!("{}", T::cli_status_authenticated(lang));
 
-            if let Some(user_data) = token_data.user_data {
+            if let Some(ref user_data) = token_data.user_data {
                 if let Some(name) = user_data.get("names").and_then(|v| v.as_str()) {
-                    println!("User: {}", name);
+                    println!("{}: {}", T::cli_user(lang), name);
                 }
                 if let Some(users) = user_data.get("users").and_then(|v| v.as_array()) {
                     for user in users {
                         if let Some(name) = user.get("names").and_then(|v| v.as_str()) {
-                            println!("User: {}", name);
+                            println!("{}: {}", T::cli_user(lang), name);
                         }
                     }
                 }
             }
 
+            if let Some(ref auth_type) = token_data.auth_type {
+                println!("{}: {}", T::cli_auth_type(lang), auth_type);
+            }
+
             if let Some(year) = token_data.school_year {
-                println!("School Year ID: {}", year);
+                println!("{}: {}", T::cli_school_year_id(lang), year);
             }
 
             println!();
-            println!("Cache directory: {}", cache.cache_dir().display());
-            println!("Cache TTL: {} seconds", cache.ttl());
+            println!("{}: {}", T::cli_cache_dir(lang), cache.cache_dir().display());
+            println!("{}: {} {}", T::cli_cache_ttl(lang), cache.ttl(), T::cli_seconds(lang));
         }
         Err(_) => {
-            println!("Status: Not authenticated");
+            println!("{}", T::cli_status_not_authenticated(lang));
             println!();
-            println!("Run 'shkolo login' or 'shkolo import-token' to authenticate");
+            println!("{}", T::cli_run_login_hint(lang));
         }
     }
 
     Ok(())
 }
 
-async fn cache_command(cache: &CacheStore, clear: bool, clear_all: bool, refresh: bool) -> Result<()> {
+fn set_lang(cache: &CacheStore, language: &str) -> Result<()> {
+    match Lang::from_str(language) {
+        Some(lang) => {
+            let mut ui_config = cache.load_ui_config();
+            ui_config.language = Some(lang.as_str().to_string());
+            cache.save_ui_config(&ui_config)?;
+            println!("{} {}", T::cli_lang_set(lang), lang.as_str());
+            Ok(())
+        }
+        None => {
+            println!("{}", T::cli_lang_invalid(Lang::En));
+            Err(anyhow!("Invalid language: {}", language))
+        }
+    }
+}
+
+async fn cache_command(cache: &CacheStore, clear: bool, clear_all: bool, refresh: bool, lang: Lang) -> Result<()> {
     if clear_all {
         cache.clear_all()?;
-        println!("All cache cleared (including token)");
+        println!("{}", T::cli_cache_cleared_all(lang));
     } else if clear {
         cache.clear()?;
-        println!("Cache cleared (token preserved)");
+        println!("{}", T::cli_cache_cleared(lang));
     }
 
     if refresh {
         let client = get_authenticated_client(cache)?;
 
-        println!("Refreshing all data...");
+        println!("{}", T::cli_refreshing_all(lang));
 
         // Get students
         let pupils_response = client.get_pupils().await?;
@@ -1071,7 +1175,7 @@ async fn cache_command(cache: &CacheStore, clear: bool, clear_all: bool, refresh
         }
 
         cache.save_students(&students)?;
-        println!("  Refreshed {} students", students.len());
+        println!("  {} {}", T::cli_refreshed_students(lang), students.len());
 
         let today = get_today_date();
 
@@ -1123,15 +1227,15 @@ async fn cache_command(cache: &CacheStore, clear: bool, clear_all: bool, refresh
                 cache.save_schedule(student.id, &today, &schedule)?;
             }
 
-            println!("  Refreshed data for {}", student.name);
+            println!("  {} {}", T::cli_refreshed_data_for(lang), student.name);
         }
 
-        println!("All data refreshed!");
+        println!("{}", T::cli_all_data_refreshed(lang));
     }
 
     if !clear && !clear_all && !refresh {
-        println!("Cache directory: {}", cache.cache_dir().display());
-        println!("Cache TTL: {} seconds", cache.ttl());
+        println!("{}: {}", T::cli_cache_dir(lang), cache.cache_dir().display());
+        println!("{}: {} {}", T::cli_cache_ttl(lang), cache.ttl(), T::cli_seconds(lang));
         println!();
         println!("Options:");
         println!("  --clear     Clear cache (preserves token)");
@@ -1146,7 +1250,16 @@ fn get_authenticated_client(cache: &CacheStore) -> Result<ShkoloClient> {
     let token_data = cache.load_token()
         .map_err(|_| anyhow!("Not authenticated. Run 'shkolo login' or 'shkolo import-token' first."))?;
 
-    Ok(ShkoloClient::with_token(token_data.token, token_data.school_year))
+    let is_cookie = token_data.auth_type.as_deref() == Some("cookie");
+    if is_cookie {
+        Ok(ShkoloClient::with_cookie(
+            token_data.token,
+            token_data.xsrf_token,
+            token_data.school_year,
+        ))
+    } else {
+        Ok(ShkoloClient::with_token(token_data.token, token_data.school_year))
+    }
 }
 
 async fn get_students(

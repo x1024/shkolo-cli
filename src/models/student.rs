@@ -28,28 +28,34 @@ pub struct PupilsResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserRole {
-    pub role_id: Option<i64>,
-    pub role_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchoolYear {
     pub id: i64,
     pub name: Option<String>,
 }
 
+/// Each entry from /v1/auth/usersAndYears is a user+year combination
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct User {
+pub struct UserYearEntry {
     pub id: Option<i64>,
-    pub names: Option<String>,
-    pub roles: Option<Vec<UserRole>>,
-    pub years: Option<Vec<SchoolYear>>,
+    #[serde(alias = "user_name")]
+    pub user_name: Option<String>,
+    #[serde(rename = "schoolYear")]
+    pub school_year: Option<i64>,
+    pub school_name: Option<String>,
+    #[serde(rename = "isSelected")]
+    pub is_selected: Option<bool>,
+    // Accept roles as any JSON value (string or array)
+    #[serde(default)]
+    pub roles: Option<serde_json::Value>,
+    pub roles_ids: Option<String>,
+    pub region_id: Option<i64>,
+    #[serde(rename = "notificationCount")]
+    pub notification_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsersAndYearsResponse {
-    pub users: Option<Vec<User>>,
+    pub users: Option<Vec<UserYearEntry>>,
 }
 
 impl Student {

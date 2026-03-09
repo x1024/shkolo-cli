@@ -13,6 +13,23 @@ impl Default for Lang {
     }
 }
 
+impl Lang {
+    pub fn from_str(s: &str) -> Option<Lang> {
+        match s.to_lowercase().as_str() {
+            "bg" | "бг" => Some(Lang::Bg),
+            "en" => Some(Lang::En),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Lang::Bg => "bg",
+            Lang::En => "en",
+        }
+    }
+}
+
 /// Translation strings
 pub struct T;
 
@@ -361,4 +378,95 @@ impl T {
         match lang { Lang::Bg => "Избор получатели", Lang::En => "Select Recipients" }
     }
 
+    // CLI output strings
+
+    pub fn cli_status_authenticated(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Статус: Автентикиран", Lang::En => "Status: Authenticated" }
+    }
+    pub fn cli_status_not_authenticated(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Статус: Не е автентикиран", Lang::En => "Status: Not authenticated" }
+    }
+    pub fn cli_user(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Потребител", Lang::En => "User" }
+    }
+    pub fn cli_school_year_id(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Учебна година ID", Lang::En => "School Year ID" }
+    }
+    pub fn cli_auth_type(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Тип автентикация", Lang::En => "Auth type" }
+    }
+    pub fn cli_cache_dir(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Папка с кеш", Lang::En => "Cache directory" }
+    }
+    pub fn cli_cache_ttl(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Кеш TTL", Lang::En => "Cache TTL" }
+    }
+    pub fn cli_seconds(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "секунди", Lang::En => "seconds" }
+    }
+    pub fn cli_run_login_hint(lang: Lang) -> &'static str {
+        match lang {
+            Lang::Bg => "Изпълнете 'shkolo login' или 'shkolo import-token' за автентикация",
+            Lang::En => "Run 'shkolo login' or 'shkolo import-token' to authenticate",
+        }
+    }
+    pub fn cli_token_imported(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Токенът е импортиран успешно!", Lang::En => "Token imported successfully!" }
+    }
+    pub fn cli_logged_in(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Успешен вход!", Lang::En => "Logged in successfully!" }
+    }
+    pub fn cli_logged_in_google(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Успешен вход с Google!", Lang::En => "Logged in with Google successfully!" }
+    }
+    pub fn cli_logged_out(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Успешен изход!", Lang::En => "Logged out successfully!" }
+    }
+    pub fn cli_cache_cleared(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Кешът е изчистен (токенът е запазен)", Lang::En => "Cache cleared (token preserved)" }
+    }
+    pub fn cli_cache_cleared_all(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Целият кеш е изчистен (включително токен)", Lang::En => "All cache cleared (including token)" }
+    }
+    pub fn cli_refreshing_all(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Обновяване на всички данни...", Lang::En => "Refreshing all data..." }
+    }
+    pub fn cli_refreshed_students(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Обновени ученици", Lang::En => "Refreshed students" }
+    }
+    pub fn cli_refreshed_data_for(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Обновени данни за", Lang::En => "Refreshed data for" }
+    }
+    pub fn cli_all_data_refreshed(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Всички данни са обновени!", Lang::En => "All data refreshed!" }
+    }
+    pub fn cli_lang_set(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Езикът е зададен на", Lang::En => "Language set to" }
+    }
+    pub fn cli_lang_invalid(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Невалиден език. Използвайте 'bg' или 'en'.", Lang::En => "Invalid language. Use 'bg' or 'en'." }
+    }
+    pub fn cli_roles(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Роли", Lang::En => "Roles" }
+    }
+    pub fn cli_logged_in_web(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Успешен вход с уеб бисквитка!", Lang::En => "Logged in with web cookie successfully!" }
+    }
+    pub fn cli_web_login_failed(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Уеб автентикацията се провали. Проверете бисквитката.", Lang::En => "Web authentication failed. Check your cookie value." }
+    }
+    pub fn cli_year_unavailable(lang: Lang, year: &str) -> String {
+        match lang {
+            Lang::Bg => format!("{} не е достъпна с тази сесия", year),
+            Lang::En => format!("{} is not available with this session", year),
+        }
+    }
+
+    // School year
+    pub fn school_year(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Учебна година", Lang::En => "School Year" }
+    }
+    pub fn school_years(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Учебни години", Lang::En => "School Years" }
+    }
 }

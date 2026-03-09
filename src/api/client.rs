@@ -7,14 +7,24 @@ use crate::models::*;
 use super::types::*;
 
 const API_BASE_URL: &str = "https://api.shkolo.bg";
+const WEB_BASE_URL: &str = "https://app.shkolo.bg";
 const USER_AGENT: &str = "Shkolo-app-iOS/1.43.3";
+const WEB_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const GOOGLE_CLIENT_ID: &str = "186341692533-14k2gd4i6fsj230cqu40jf04dp0igr3j.apps.googleusercontent.com";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    Bearer,
+    Cookie,
+}
 
 #[derive(Debug, Clone)]
 pub struct ShkoloClient {
     client: Client,
     token: Option<String>,
     school_year: Option<i64>,
+    auth_mode: AuthMode,
+    xsrf_token: Option<String>,
 }
 
 impl ShkoloClient {
@@ -28,12 +38,23 @@ impl ShkoloClient {
             client,
             token: None,
             school_year: None,
+            auth_mode: AuthMode::Bearer,
+            xsrf_token: None,
         }
     }
 
     pub fn with_token(token: String, school_year: Option<i64>) -> Self {
         let mut client = Self::new();
         client.token = Some(token);
+        client.school_year = school_year;
+        client
+    }
+
+    pub fn with_cookie(cookie: String, xsrf_token: Option<String>, school_year: Option<i64>) -> Self {
+        let mut client = Self::new();
+        client.token = Some(cookie);
+        client.auth_mode = AuthMode::Cookie;
+        client.xsrf_token = xsrf_token;
         client.school_year = school_year;
         client
     }
@@ -46,19 +67,52 @@ impl ShkoloClient {
         self.school_year
     }
 
+    pub fn set_school_year(&mut self, year_id: i64) {
+        self.school_year = Some(year_id);
+    }
+
+    pub fn auth_mode(&self) -> AuthMode {
+        self.auth_mode
+    }
+
+    fn base_url(&self) -> &str {
+        match self.auth_mode {
+            AuthMode::Bearer => API_BASE_URL,
+            AuthMode::Cookie => WEB_BASE_URL,
+        }
+    }
+
     fn headers(&self, authorized: bool) -> header::HeaderMap {
         let mut headers = header::HeaderMap::new();
         headers.insert(header::ACCEPT, "application/json".parse().unwrap());
         headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
-        headers.insert(header::USER_AGENT, USER_AGENT.parse().unwrap());
         headers.insert("language", "bg".parse().unwrap());
 
-        if authorized {
-            if let Some(ref token) = self.token {
-                headers.insert(
-                    header::AUTHORIZATION,
-                    format!("Bearer {}", token).parse().unwrap(),
-                );
+        match self.auth_mode {
+            AuthMode::Bearer => {
+                headers.insert(header::USER_AGENT, USER_AGENT.parse().unwrap());
+                if authorized {
+                    if let Some(ref token) = self.token {
+                        headers.insert(
+                            header::AUTHORIZATION,
+                            format!("Bearer {}", token).parse().unwrap(),
+                        );
+                    }
+                }
+            }
+            AuthMode::Cookie => {
+                headers.insert(header::USER_AGENT, WEB_USER_AGENT.parse().unwrap());
+                if authorized {
+                    if let Some(ref cookie) = self.token {
+                        headers.insert(
+                            header::COOKIE,
+                            format!("shkolo-cookie={}", cookie).parse().unwrap(),
+                        );
+                    }
+                    if let Some(ref xsrf) = self.xsrf_token {
+                        headers.insert("X-XSRF-TOKEN", xsrf.parse().unwrap());
+                    }
+                }
             }
         }
 
@@ -70,7 +124,7 @@ impl ShkoloClient {
     }
 
     async fn get<T: DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
-        let url = format!("{}{}", API_BASE_URL, endpoint);
+        let url = format!("{}{}", self.base_url(), endpoint);
         let response = self.client
             .get(&url)
             .headers(self.headers(true))
@@ -92,7 +146,7 @@ impl ShkoloClient {
     }
 
     async fn post<T: DeserializeOwned, R: serde::Serialize>(&self, endpoint: &str, body: &R, authorized: bool) -> Result<T> {
-        let url = format!("{}{}", API_BASE_URL, endpoint);
+        let url = format!("{}{}", self.base_url(), endpoint);
         let response = self.client
             .post(&url)
             .headers(self.headers(authorized))
@@ -129,15 +183,15 @@ impl ShkoloClient {
         // Get users and years to select school year
         let users_response = self.get_users_and_years().await?;
 
-        // Auto-select first available school year
-        if let Some(ref users) = users_response.users {
-            for user in users {
-                if let Some(ref years) = user.years {
-                    if let Some(year) = years.iter().max_by_key(|y| y.id) {
-                        self.school_year = Some(year.id);
-                        break;
-                    }
+        // Auto-select the selected school year, or the highest one
+        if let Some(ref entries) = users_response.users {
+            // Prefer the entry marked as selected
+            if let Some(selected) = entries.iter().find(|e| e.is_selected == Some(true)) {
+                if let Some(year) = selected.school_year {
+                    self.school_year = Some(year);
                 }
+            } else if let Some(max_year) = entries.iter().filter_map(|e| e.school_year).max() {
+                self.school_year = Some(max_year);
             }
         }
 
@@ -158,15 +212,14 @@ impl ShkoloClient {
         // Get users and years
         let users_response = self.get_users_and_years().await?;
 
-        // Auto-select first available school year
-        if let Some(ref users) = users_response.users {
-            for user in users {
-                if let Some(ref years) = user.years {
-                    if let Some(year) = years.iter().max_by_key(|y| y.id) {
-                        self.school_year = Some(year.id);
-                        break;
-                    }
+        // Auto-select the selected school year, or the highest one
+        if let Some(ref entries) = users_response.users {
+            if let Some(selected) = entries.iter().find(|e| e.is_selected == Some(true)) {
+                if let Some(year) = selected.school_year {
+                    self.school_year = Some(year);
                 }
+            } else if let Some(max_year) = entries.iter().filter_map(|e| e.school_year).max() {
+                self.school_year = Some(max_year);
             }
         }
 
@@ -188,6 +241,7 @@ impl ShkoloClient {
     pub async fn get_users_and_years(&self) -> Result<UsersAndYearsResponse> {
         self.get("/v1/auth/usersAndYears").await
     }
+
 
     /// Get pupils (children for parent accounts)
     pub async fn get_pupils(&self) -> Result<PupilsResponse> {
@@ -213,6 +267,7 @@ impl ShkoloClient {
     pub async fn get_pupil_schedule(&self, pupil_id: i64, date: &str) -> Result<ScheduleResponse> {
         self.get(&format!("/v1/diary/pupils/{}/scheduleHours?date={}", pupil_id, date)).await
     }
+
 
     /// Get events/invitations for a pupil (includes upcoming tests)
     pub async fn get_pupil_events(&self, pupil_id: i64) -> Result<EventsResponse> {
@@ -323,6 +378,12 @@ impl ShkoloClient {
         self.post("/v1/messenger/threads", &payload, true).await
     }
 
+    /// Verify that authentication works by probing the pupils endpoint
+    pub async fn verify_auth(&self) -> Result<()> {
+        let _: PupilsResponse = self.get("/v1/diary/pupils").await?;
+        Ok(())
+    }
+
     /// Check if user can send messages
     pub async fn can_send_messages(&self) -> Result<bool> {
         let response: serde_json::Value = self.get("/v1/messenger/canSendMessages").await?;
@@ -333,5 +394,14 @@ impl ShkoloClient {
 impl Default for ShkoloClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Display for AuthMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthMode::Bearer => write!(f, "bearer"),
+            AuthMode::Cookie => write!(f, "cookie"),
+        }
     }
 }
