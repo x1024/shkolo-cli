@@ -615,6 +615,9 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                             app.students = students;
                             app.notifications = notifications;
                             app.messages = messages;
+                            // Data refresh always fetches today's schedule,
+                            // so reset schedule_date to keep label and data in sync
+                            app.schedule_today();
                             app.set_status("Refreshed");
                         }
                         BackgroundResult::ScheduleRefresh { student_id, date, schedule } => {
@@ -1628,7 +1631,7 @@ mod dirs {
 }
 
 fn get_today_date() -> String {
-    let now = OffsetDateTime::now_utc();
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
     format!("{:04}-{:02}-{:02}", now.year(), now.month() as u8, now.day())
 }
 
