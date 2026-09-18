@@ -1437,10 +1437,13 @@ async fn get_students(
     cache: &CacheStore,
     force_refresh: bool,
 ) -> Result<(Vec<Student>, bool, Option<String>)> {
-    // Check cache first
+    // Check cache first. A list without school tags can only be trusted for
+    // single-school accounts; otherwise it came from a degraded fetch.
     if !force_refresh {
         if let Some((students, age, expired)) = cache.get_students() {
-            if !expired {
+            let untagged = students.iter().any(|s| s.context().is_none());
+            let incomplete = untagged && known_school_count(cache) > 1;
+            if !expired && !incomplete {
                 return Ok((students, true, Some(age)));
             }
         }
@@ -1448,7 +1451,7 @@ async fn get_students(
 
     // Fetch from API: the pupils endpoint only returns the selected school's children,
     // so visit every school of the current year and tag the pupils with their school
-    let contexts = current_contexts(client, cache).await;
+    let contexts = current_contexts(client, cache).await?;
     let mut students = Vec::new();
     if contexts.is_empty() {
         students.extend(fetch_pupils(client).await?);
@@ -1688,7 +1691,7 @@ async fn get_notifications(
     }
 
     // Fetch from every current-year school (notifications are per parent user)
-    let contexts = current_contexts(client, cache).await;
+    let contexts = current_contexts(client, cache).await?;
     let mut notifications = Vec::new();
     if contexts.is_empty() {
         notifications = fetch_notifications(client).await?;
@@ -1738,7 +1741,7 @@ async fn get_messages(
         }
     }
 
-    let contexts = current_contexts(client, cache).await;
+    let contexts = current_contexts(client, cache).await?;
     let mut messages = Vec::new();
     if contexts.is_empty() {
         messages = fetch_messages(client).await?;
@@ -1998,25 +2001,32 @@ async fn refresh_schedule_background(
 // --- School context helpers ---
 
 /// School contexts of the current school year. Read from the token file; fetched
-/// live (and stored) when the file has none yet. Empty for accounts with no context info.
-async fn current_contexts(client: &ShkoloClient, cache: &CacheStore) -> Vec<SchoolContext> {
+/// live (and stored) when the file has none yet. Fails when the list cannot be
+/// determined at all, so callers never silently degrade to a single school.
+async fn current_contexts(client: &ShkoloClient, cache: &CacheStore) -> Result<Vec<SchoolContext>> {
     let mut contexts = cache.load_token().map(|t| contexts_from_token(&t)).unwrap_or_default();
     if contexts.is_empty() {
-        if let Ok(response) = client.get_users_and_years().await {
-            if let Some(entries) = response.users {
-                if let Ok(mut token_data) = cache.load_token() {
-                    if let Ok(json) = serde_json::to_value(&entries) {
-                        store_users_in_token(&mut token_data, json);
-                        let _ = cache.save_token_full(&token_data);
-                    }
-                }
-                contexts = SchoolContext::from_entries(&entries);
+        let response = client.get_users_and_years().await
+            .map_err(|e| anyhow!("Could not determine the account's schools: {}", e))?;
+        let entries = response.users.unwrap_or_default();
+        if let Ok(mut token_data) = cache.load_token() {
+            if let Ok(json) = serde_json::to_value(&entries) {
+                store_users_in_token(&mut token_data, json);
+                let _ = cache.save_token_full(&token_data);
             }
         }
+        contexts = SchoolContext::from_entries(&entries);
     }
     let current = SchoolContext::current_year(&contexts);
     contexts.retain(|c| c.is_current(current));
-    contexts
+    Ok(contexts)
+}
+
+/// Number of schools in the current year according to the token file (0 if unknown)
+fn known_school_count(cache: &CacheStore) -> usize {
+    let contexts = cache.load_token().map(|t| contexts_from_token(&t)).unwrap_or_default();
+    let current = SchoolContext::current_year(&contexts);
+    contexts.iter().filter(|c| c.is_current(current)).count()
 }
 
 /// Make sure the server is on the given school context; on a switch, record it in the token file
