@@ -188,9 +188,6 @@ impl T {
     pub fn last_refresh(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Последно:", Lang::En => "Last:" }
     }
-    pub fn loading_data(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Зареждане данни...", Lang::En => "Loading data..." }
-    }
     pub fn loading_thread(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Зареждане нишка...", Lang::En => "Loading thread..." }
     }
@@ -456,30 +453,6 @@ impl T {
         match lang { Lang::Bg => "Уеб автентикацията се провали. Проверете бисквитката.", Lang::En => "Web authentication failed. Check your cookie value." }
     }
     // Schools (school contexts)
-    pub fn schools(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Училища", Lang::En => "Schools" }
-    }
-    pub fn schools_all_years(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Училища (всички години)", Lang::En => "Schools (all years)" }
-    }
-    pub fn switching_school(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Превключване към", Lang::En => "Switching to" }
-    }
-    pub fn switched_school(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Училище", Lang::En => "School" }
-    }
-    pub fn school_switch_failed(lang: Lang, school: &str, err: &str) -> String {
-        match lang {
-            Lang::Bg => format!("Неуспешно превключване към {}\n{}", school, err),
-            Lang::En => format!("Failed to switch to {}\n{}", school, err),
-        }
-    }
-    pub fn key_switch_school(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Избери училище", Lang::En => "Switch to school" }
-    }
-    pub fn key_toggle_years(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Покажи/скрий предишни години", Lang::En => "Show/hide previous years" }
-    }
     pub fn cli_school(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Училище", Lang::En => "School" }
     }

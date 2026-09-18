@@ -9,6 +9,13 @@ pub struct Notification {
     pub is_read: bool,
     pub notification_type: Option<String>,
     pub pupil_names: Option<String>,
+    /// School context the item came from (set when aggregating over several schools)
+    #[serde(default)]
+    pub school_name: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<i64>,
+    #[serde(default)]
+    pub school_year: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +64,9 @@ impl Notification {
             .or_else(|| raw.pupils.as_ref().map(|p| p.join(", ")));
 
         Self {
+            school_name: None,
+            user_id: None,
+            school_year: None,
             id: raw.id.clone(),
             title: raw.text.clone()
                 .or_else(|| raw.title.clone())

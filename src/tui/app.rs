@@ -1,4 +1,3 @@
-use crate::api::ShkoloClient;
 use crate::cache::CacheStore;
 use crate::i18n::{Lang, T};
 use crate::models::*;
@@ -222,7 +221,6 @@ impl Tab {
 pub enum Focus {
     Students,
     Content,
-    Schools,
     // Overview tab sub-panes
     OverviewSchedule,
     OverviewHomework,
@@ -351,11 +349,10 @@ pub struct App {
     // Navigation history (for back/forward)
     nav_history: Vec<Location>,
     nav_index: usize,  // Current position in history
-    // School selection: one context per (parent user, school year)
+    // School contexts: one per (parent user, school year); students of all
+    // current-year schools are listed together, grouped by school
     pub school_contexts: Vec<SchoolContext>,
-    pub active_context: Option<(i64, i64)>, // (user_id, school_year) currently in use
-    pub selected_context: usize,            // cursor within visible_contexts()
-    pub show_all_years: bool,               // also list contexts from previous years
+    pub active_context: Option<(i64, i64)>, // (user_id, school_year) the server is on
 }
 
 impl App {
@@ -421,8 +418,6 @@ impl App {
             // Schools
             school_contexts: Vec::new(),
             active_context: None,
-            selected_context: 0,
-            show_all_years: false,
         }
     }
 
@@ -481,8 +476,7 @@ impl App {
             return false;
         }
         // Only show if there's more than one student
-        // With several schools, always show the pane so the child's name and school are visible
-        self.students.len() > 1 || (self.has_schools_pane() && !self.students.is_empty())
+        self.students.len() > 1
     }
 
     // School contexts
@@ -494,101 +488,53 @@ impl App {
         if self.active_context.is_none() {
             self.active_context = self.school_contexts.iter().find(|c| c.is_selected).map(|c| c.key());
         }
-        self.sync_context_cursor();
     }
 
-    /// Mark a context as the one in use and move the cursor onto it
+    /// Record which context the server is on
     pub fn set_active_context(&mut self, user_id: i64, school_year: i64) {
         self.active_context = Some((user_id, school_year));
         for c in &mut self.school_contexts {
             c.is_selected = c.user_id == user_id && c.school_year == school_year;
         }
-        self.sync_context_cursor();
     }
 
-    /// The latest school year known (the "current" one)
-    pub fn current_school_year(&self) -> Option<i64> {
-        SchoolContext::current_year(&self.school_contexts)
-    }
-
-    /// Contexts listed in the Schools pane: current-year ones plus the active one,
-    /// or everything when show_all_years is on.
-    pub fn visible_contexts(&self) -> Vec<&SchoolContext> {
-        let current = self.current_school_year();
-        self.school_contexts
+    /// Whether the listed students come from more than one school
+    pub fn has_multiple_schools(&self) -> bool {
+        let mut keys: Vec<(Option<i64>, Option<i64>)> = self.students
             .iter()
-            .filter(|c| self.show_all_years || c.is_current(current) || Some(c.key()) == self.active_context)
-            .collect()
+            .map(|d| (d.student.user_id, d.student.school_year))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys.len() > 1
     }
 
-    /// Check if the schools pane should be shown
-    pub fn has_schools_pane(&self) -> bool {
-        self.school_contexts.len() > 1
-    }
-
-    /// Height of the schools pane including borders
-    pub fn schools_pane_height(&self) -> u16 {
-        (self.visible_contexts().len() as u16 + 2).min(10)
-    }
-
-    /// The context under the cursor in the Schools pane
-    pub fn selected_school(&self) -> Option<SchoolContext> {
-        self.visible_contexts().get(self.selected_context).map(|c| (*c).clone())
-    }
-
-    /// Move the schools cursor down
-    pub fn next_school(&mut self) {
-        let len = self.visible_contexts().len();
-        if len > 0 {
-            self.selected_context = (self.selected_context + 1) % len;
+    /// Rows of the students sidebar: with several schools, each school gets a
+    /// non-selectable header row followed by its (indented) students.
+    /// Students must be sorted so that each school's pupils are contiguous.
+    pub fn sidebar_rows(&self) -> Vec<SidebarRow> {
+        let grouped = self.has_multiple_schools();
+        let mut rows = Vec::with_capacity(self.students.len() + 4);
+        let mut last_key: Option<(Option<i64>, Option<i64>)> = None;
+        for (i, data) in self.students.iter().enumerate() {
+            let key = (data.student.user_id, data.student.school_year);
+            if grouped && last_key != Some(key) {
+                let name = data.student.school_name.clone().unwrap_or_else(|| "?".to_string());
+                rows.push(SidebarRow::School(name));
+                last_key = Some(key);
+            }
+            rows.push(SidebarRow::Student(i));
         }
-    }
-
-    /// Move the schools cursor up
-    pub fn prev_school(&mut self) {
-        let len = self.visible_contexts().len();
-        if len > 0 {
-            self.selected_context = if self.selected_context == 0 { len - 1 } else { self.selected_context - 1 };
-        }
-    }
-
-    /// Toggle listing of previous years' contexts
-    pub fn toggle_all_years(&mut self) {
-        self.show_all_years = !self.show_all_years;
-        self.sync_context_cursor();
-    }
-
-    /// Put the cursor on the active context if visible, otherwise clamp it
-    pub fn sync_context_cursor(&mut self) {
-        let (pos, len) = {
-            let visible = self.visible_contexts();
-            (
-                visible.iter().position(|c| Some(c.key()) == self.active_context),
-                visible.len(),
-            )
-        };
-        match pos {
-            Some(p) => self.selected_context = p,
-            None => self.selected_context = self.selected_context.min(len.saturating_sub(1)),
-        }
+        rows
     }
 
     /// Get effective sidebar width (0 if no sidebar pane is visible)
     pub fn effective_students_width(&self) -> u16 {
-        if self.has_students_pane() || self.has_sidebar() {
+        if self.has_students_pane() {
             self.students_pane_width
         } else {
             0
         }
-    }
-
-    /// Check if any sidebar pane should be shown for the current tab
-    fn has_sidebar(&self) -> bool {
-        // Same tabs that are excluded from students pane
-        if matches!(self.current_tab, Tab::Notifications | Tab::Settings | Tab::Messages) {
-            return false;
-        }
-        self.has_schools_pane()
     }
 
     // Navigation history methods
@@ -902,35 +848,13 @@ impl App {
 
         // Check if click is in sidebar (left side)
         if column < students_width {
-            // If we have both students and schools, determine which pane was clicked
-            let show_students = self.has_students_pane();
-            let show_schools = self.has_schools_pane();
-
-            if show_students && show_schools {
-                // Schools pane is at the bottom of the sidebar
-                let schools_height = self.schools_pane_height();
-                let sidebar_height = content_height;
-                let students_height = sidebar_height.saturating_sub(schools_height);
-                let click_row_in_sidebar = row.saturating_sub(header_offset);
-
-                if click_row_in_sidebar >= students_height {
-                    // Click is in schools pane
-                    self.focus = Focus::Schools;
-                    let school_row = (click_row_in_sidebar - students_height).saturating_sub(1) as usize; // -1 for border
-                    return self.click_school_row(school_row);
-                }
-            }
-
-            if show_students {
+            if self.has_students_pane() {
                 self.focus = Focus::Students;
-                if relative_row < self.students.len() {
-                    self.selected_student = relative_row;
+                if let Some(SidebarRow::Student(idx)) = self.sidebar_rows().get(relative_row) {
+                    self.selected_student = *idx;
                     self.list_offset = 0;
                     return ClickResult::StudentSelected;
                 }
-            } else if show_schools {
-                self.focus = Focus::Schools;
-                return self.click_school_row(relative_row);
             }
             return ClickResult::None;
         }
@@ -981,75 +905,28 @@ impl App {
         ClickResult::None
     }
 
-    /// Handle a click on a row of the Schools pane: move the cursor and, if the
-    /// clicked context is not the active one, request a switch to it.
-    fn click_school_row(&mut self, row: usize) -> ClickResult {
-        let target = {
-            let visible = self.visible_contexts();
-            visible.get(row).map(|c| c.key())
-        };
-        match target {
-            Some(key) => {
-                self.selected_context = row;
-                if Some(key) != self.active_context {
-                    ClickResult::SwitchSchool(key.0, key.1)
-                } else {
-                    ClickResult::None
-                }
-            }
-            None => ClickResult::None,
-        }
-    }
-
     pub fn toggle_focus(&mut self) {
         let has_students = self.has_students_pane();
-        let has_years = self.has_schools_pane();
 
         self.focus = match self.current_tab {
-            Tab::Overview => {
-                if has_students {
-                    // Cycle: Students -> SchoolYears? -> Schedule -> Homework -> Grades -> Students
-                    match self.focus {
-                        Focus::Students => {
-                            if has_years { Focus::Schools } else { Focus::OverviewSchedule }
-                        }
-                        Focus::Schools => Focus::OverviewSchedule,
-                        Focus::OverviewSchedule => Focus::OverviewHomework,
-                        Focus::OverviewHomework => Focus::OverviewGrades,
-                        Focus::OverviewGrades => Focus::Students,
-                        _ => Focus::OverviewSchedule,
-                    }
-                } else {
-                    // No students pane: SchoolYears? -> Schedule -> Homework -> Grades -> ...
-                    match self.focus {
-                        Focus::Schools => Focus::OverviewSchedule,
-                        Focus::OverviewSchedule => Focus::OverviewHomework,
-                        Focus::OverviewHomework => Focus::OverviewGrades,
-                        Focus::OverviewGrades => {
-                            if has_years { Focus::Schools } else { Focus::OverviewSchedule }
-                        }
-                        _ => Focus::OverviewSchedule,
-                    }
+            Tab::Overview => match self.focus {
+                // Cycle: Students? -> Schedule -> Homework -> Grades -> Students?
+                Focus::Students => Focus::OverviewSchedule,
+                Focus::OverviewSchedule => Focus::OverviewHomework,
+                Focus::OverviewHomework => Focus::OverviewGrades,
+                Focus::OverviewGrades => {
+                    if has_students { Focus::Students } else { Focus::OverviewSchedule }
                 }
-            }
+                _ => Focus::OverviewSchedule,
+            },
             _ => {
                 if has_students {
-                    // Students -> SchoolYears? -> Content -> Students
+                    // Students -> Content -> Students
                     match self.focus {
-                        Focus::Students => {
-                            if has_years { Focus::Schools } else { Focus::Content }
-                        }
-                        Focus::Schools => Focus::Content,
+                        Focus::Students => Focus::Content,
                         _ => Focus::Students,
                     }
-                } else if has_years {
-                    // SchoolYears -> Content -> SchoolYears
-                    match self.focus {
-                        Focus::Schools => Focus::Content,
-                        _ => Focus::Schools,
-                    }
                 } else {
-                    // No sidebar panes: stay on Content
                     Focus::Content
                 }
             }
@@ -1446,332 +1323,6 @@ impl App {
         self.schedule_date = self.effective_date.clone();
     }
 
-    pub async fn refresh_data(&mut self, client: &ShkoloClient, cache: &CacheStore, force: bool) -> anyhow::Result<()> {
-        self.loading = true;
-        self.set_status("Refreshing...");
-
-        // Fetch students
-        let pupils_response = client.get_pupils().await?;
-
-        let mut students = Vec::new();
-        if let Some(child_pupils) = pupils_response.child_pupils {
-            for (id, pupil) in child_pupils {
-                students.push(Student::from_child_pupil(&id, &pupil));
-            }
-        }
-
-        // Sort by name for consistent ordering
-        students.sort_by(|a, b| a.name.cmp(&b.name));
-
-        cache.save_students(&students)?;
-
-        // Fetch data for each student
-        self.students.clear();
-        for student in &students {
-            let mut data = StudentData::new(student.clone());
-
-            // Check cache for homework
-            let should_refresh_homework = force || cache.get_homework(student.id)
-                .map(|(_, _, expired)| expired)
-                .unwrap_or(true);
-
-            if should_refresh_homework {
-                if let Ok(homework) = self.fetch_homework(client, student.id).await {
-                    data.homework = homework.clone();
-                    data.homework_age = Some("just now".to_string());
-                    let _ = cache.save_homework(student.id, &homework);
-                }
-            } else if let Some((homework, age, _)) = cache.get_homework(student.id) {
-                data.homework = homework;
-                data.homework_age = Some(age);
-            }
-
-            // Check cache for grades
-            let should_refresh_grades = force || cache.get_grades(student.id)
-                .map(|(_, _, expired)| expired)
-                .unwrap_or(true);
-
-            if should_refresh_grades {
-                if let Ok(grades) = self.fetch_grades(client, student.id).await {
-                    data.grades = grades.clone();
-                    data.grades_age = Some("just now".to_string());
-                    let _ = cache.save_grades(student.id, &grades);
-                }
-            } else if let Some((grades, age, _)) = cache.get_grades(student.id) {
-                data.grades = grades;
-                data.grades_age = Some(age);
-            }
-
-            // Check cache for schedule
-            let should_refresh_schedule = force || cache.get_schedule(student.id, &self.current_date)
-                .map(|(_, _, expired)| expired)
-                .unwrap_or(true);
-
-            if should_refresh_schedule {
-                if let Ok(schedule) = self.fetch_schedule(client, student.id, &self.current_date).await {
-                    data.schedule = schedule.clone();
-                    data.schedule_age = Some("just now".to_string());
-                    let _ = cache.save_schedule(student.id, &self.current_date, &schedule);
-                }
-            } else if let Some((schedule, age, _)) = cache.get_schedule(student.id, &self.current_date) {
-                data.schedule = schedule;
-                data.schedule_age = Some(age);
-            }
-
-            // Fetch events
-            if let Ok(events_response) = client.get_pupil_events(student.id).await {
-                let events: Vec<Event> = events_response.invitations
-                    .unwrap_or_default()
-                    .iter()
-                    .map(Event::from_raw)
-                    .collect();
-                data.events = events.clone();
-                let _ = cache.save_events(student.id, &events);
-            }
-
-            // Fetch absences
-            let should_refresh_absences = force || cache.get_absences(student.id)
-                .map(|(_, _, expired)| expired)
-                .unwrap_or(true);
-
-            if should_refresh_absences {
-                if let Ok(absences) = self.fetch_absences(client, student.id).await {
-                    data.absences = absences.clone();
-                    data.absences_age = Some("just now".to_string());
-                    let _ = cache.save_absences(student.id, &absences);
-                }
-            } else if let Some((absences, age, _)) = cache.get_absences(student.id) {
-                data.absences = absences;
-                data.absences_age = Some(age);
-            }
-
-            // Fetch feedbacks
-            let should_refresh_feedbacks = force || cache.get_feedbacks(student.id)
-                .map(|(_, _, expired)| expired)
-                .unwrap_or(true);
-
-            if should_refresh_feedbacks {
-                if let Ok(feedbacks) = self.fetch_feedbacks(client, student.id).await {
-                    data.feedbacks = feedbacks.clone();
-                    data.feedbacks_age = Some("just now".to_string());
-                    let _ = cache.save_feedbacks(student.id, &feedbacks);
-                }
-            } else if let Some((feedbacks, age, _)) = cache.get_feedbacks(student.id) {
-                data.feedbacks = feedbacks;
-                data.feedbacks_age = Some(age);
-            }
-
-            self.students.push(data);
-        }
-
-        // Fetch notifications
-        let should_refresh_notifications = force || cache.get_notifications()
-            .map(|(_, _, expired)| expired)
-            .unwrap_or(true);
-
-        if should_refresh_notifications {
-            if let Ok(notifications) = self.fetch_notifications(client).await {
-                self.notifications = notifications.clone();
-                self.notifications_age = Some("just now".to_string());
-                let _ = cache.save_notifications(&notifications);
-            }
-        } else if let Some((notifications, age, _)) = cache.get_notifications() {
-            self.notifications = notifications;
-            self.notifications_age = Some(age);
-        }
-
-        // Fetch messages (global, not per-student)
-        let should_refresh_messages = force || cache.get_messages()
-            .map(|(_, _, expired)| expired)
-            .unwrap_or(true);
-
-        if should_refresh_messages {
-            if let Ok(messages) = self.fetch_messages(client).await {
-                self.messages = messages.clone();
-                self.messages_age = Some("just now".to_string());
-                let _ = cache.save_messages(&messages);
-            }
-        } else if let Some((messages, age, _)) = cache.get_messages() {
-            self.messages = messages;
-            self.messages_age = Some(age);
-        }
-
-        // Compute effective date (today or next school day if school is over)
-        self.update_effective_date();
-
-        // If effective date differs from today, re-fetch schedules for the effective date
-        if self.effective_date != self.current_date {
-            let effective = self.effective_date.clone();
-            for i in 0..self.students.len() {
-                let student_id = self.students[i].student.id;
-                let should_refresh = force || cache.get_schedule(student_id, &effective)
-                    .map(|(_, _, expired)| expired)
-                    .unwrap_or(true);
-
-                if should_refresh {
-                    if let Ok(schedule) = self.fetch_schedule(client, student_id, &effective).await {
-                        self.students[i].schedule = schedule.clone();
-                        self.students[i].schedule_age = Some("just now".to_string());
-                        let _ = cache.save_schedule(student_id, &effective, &schedule);
-                    }
-                } else if let Some((schedule, age, _)) = cache.get_schedule(student_id, &effective) {
-                    self.students[i].schedule = schedule;
-                    self.students[i].schedule_age = Some(age);
-                }
-            }
-        }
-        self.schedule_date = self.effective_date.clone();
-
-        self.last_refresh = Some({
-            let now = OffsetDateTime::now_utc();
-            format!("{:02}:{:02}", now.hour(), now.minute())
-        });
-        self.loading = false;
-        self.clear_status();
-
-        Ok(())
-    }
-
-    async fn fetch_homework(&self, client: &ShkoloClient, student_id: i64) -> anyhow::Result<Vec<Homework>> {
-        let courses_response = client.get_homework_courses(student_id).await?;
-
-        let mut all_homework = Vec::new();
-
-        if let Some(courses) = courses_response.courses {
-            let counts = courses_response.cyc_group_homeworks_count.unwrap_or_default();
-
-            for course in courses {
-                if let Some(cyc_group_id) = course.cyc_group_id {
-                    let count = counts.get(&cyc_group_id.to_string()).copied().unwrap_or(0);
-                    if count == 0 {
-                        continue;
-                    }
-
-                    let base = course.course_name
-                        .or(course.course_short_name)
-                        .unwrap_or_else(|| "Unknown".to_string());
-                    let subject = match &course.course_type_name {
-                        Some(t) if !t.is_empty() => format!("{} ({})", base, t),
-                        _ => base,
-                    };
-
-                    if let Ok(hw_response) = client.get_homework_list(cyc_group_id).await {
-                        if let Some(homeworks) = hw_response.homeworks {
-                            for item in homeworks {
-                                all_homework.push(Homework::from_item(&item, &subject));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Sort by date, newest first
-        all_homework.sort_by(|a, b| {
-            b.date_sort.cmp(&a.date_sort)
-        });
-
-        Ok(all_homework)
-    }
-
-    async fn fetch_grades(&self, client: &ShkoloClient, student_id: i64) -> anyhow::Result<Vec<Grade>> {
-        // Try the detailed /grades endpoint first (has dates, comments, types)
-        if let Ok(response) = client.get_grades(student_id).await {
-            let raw = response.grades.unwrap_or_default();
-            if !raw.is_empty() {
-                let grades: Vec<Grade> = Grade::from_grades_list(&raw)
-                    .into_iter()
-                    .filter(|g| g.has_grades())
-                    .collect();
-                if !grades.is_empty() {
-                    return Ok(grades);
-                }
-            }
-        }
-
-        // Fallback to summary endpoint (no dates/comments)
-        let response = client.get_grades_summary(student_id).await?;
-        let courses = response.grades.or(response.courses).unwrap_or_default();
-        let grades: Vec<Grade> = courses
-            .iter()
-            .map(Grade::from_course_grades)
-            .filter(|g| g.has_grades())
-            .collect();
-
-        Ok(grades)
-    }
-
-    async fn fetch_schedule(&self, client: &ShkoloClient, student_id: i64, date: &str) -> anyhow::Result<Vec<ScheduleHour>> {
-        let response = client.get_pupil_schedule(student_id, date).await?;
-
-        let hours = response.schedule_hours.or(response.data).unwrap_or_default();
-        let mut schedule: Vec<ScheduleHour> = hours
-            .iter()
-            .map(ScheduleHour::from_raw)
-            .collect();
-
-        // Sort by hour number
-        schedule.sort_by_key(|h| h.hour_number);
-
-        Ok(schedule)
-    }
-
-    async fn fetch_notifications(&self, client: &ShkoloClient) -> anyhow::Result<Vec<Notification>> {
-        let response = client.get_notifications(1).await?;
-
-        let raw = response.data.or(response.notifications).unwrap_or_default();
-        let notifications: Vec<Notification> = raw.iter()
-            .map(Notification::from_raw)
-            .collect();
-
-        Ok(notifications)
-    }
-
-    async fn fetch_absences(&self, client: &ShkoloClient, student_id: i64) -> anyhow::Result<Vec<Absence>> {
-        let response = client.get_absences(student_id).await?;
-
-        let mut absences: Vec<Absence> = response.absences
-            .unwrap_or_default()
-            .iter()
-            .map(Absence::from_raw)
-            .collect();
-
-        // Stable sort: by date (newest first), then by hour, then by subject for ties
-        absences.sort_by(|a, b| {
-            b.date_sort.cmp(&a.date_sort)
-                .then_with(|| a.hour.cmp(&b.hour))
-                .then_with(|| a.subject.cmp(&b.subject))
-        });
-
-        Ok(absences)
-    }
-
-    async fn fetch_feedbacks(&self, client: &ShkoloClient, student_id: i64) -> anyhow::Result<Vec<Feedback>> {
-        let response = client.get_feedbacks(student_id).await?;
-
-        let mut feedbacks: Vec<Feedback> = response.data
-            .or(response.feedbacks)
-            .unwrap_or_default()
-            .iter()
-            .map(Feedback::from_raw)
-            .collect();
-
-        // Stable sort: by date (newest first), then by subject for ties
-        feedbacks.sort_by(Feedback::cmp_by_date);
-
-        Ok(feedbacks)
-    }
-
-    pub async fn fetch_messages(&self, client: &ShkoloClient) -> anyhow::Result<Vec<MessageThread>> {
-        let raw_threads = client.get_messenger_threads(None).await?;
-
-        let messages: Vec<MessageThread> = raw_threads.iter()
-            .map(MessageThread::from_raw)
-            .collect();
-
-        Ok(messages)
-    }
-
     /// Toggle the help overlay
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
@@ -1792,7 +1343,15 @@ pub enum ClickResult {
     ItemSelected(usize),         // Item index selected
     ActivateNotification(usize), // Notification index to activate
     ActivateMessage(usize),      // Message index to open
-    SwitchSchool(i64, i64),      // Switch to school context (user_id, school_year)
+}
+
+/// A row in the students sidebar
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidebarRow {
+    /// Non-selectable school header (shown when students span several schools)
+    School(String),
+    /// Index into App::students
+    Student(usize),
 }
 
 #[cfg(test)]
@@ -1943,8 +1502,8 @@ mod tests {
         app.current_tab = Tab::Overview;
         // Need multiple students to show students pane
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
         assert_eq!(app.focus, Focus::Students);
 
@@ -1968,7 +1527,7 @@ mod tests {
         app.current_tab = Tab::Overview;
         // Single student - no students pane
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
         app.focus = Focus::OverviewSchedule;
 
@@ -1989,9 +1548,9 @@ mod tests {
 
         // Add mock students
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Student 1".to_string(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 2, name: "Student 2".to_string(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 3, name: "Student 3".to_string(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Student 1".to_string(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 2, name: "Student 2".to_string(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 3, name: "Student 3".to_string(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
 
         assert_eq!(app.selected_student, 0);
@@ -2014,8 +1573,8 @@ mod tests {
         let mut app = App::new();
 
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Student 1".to_string(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 2, name: "Student 2".to_string(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Student 1".to_string(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 2, name: "Student 2".to_string(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
 
         // Try to select beyond bounds - should be ignored
@@ -2062,9 +1621,9 @@ mod tests {
 
         // Add some items so scrolling works
         app.notifications = vec![
-            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None },
-            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None },
-            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None },
+            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None, school_name: None, user_id: None, school_year: None },
+            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None, school_name: None, user_id: None, school_year: None },
+            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None, school_name: None, user_id: None, school_year: None },
         ];
 
         assert_eq!(app.list_offset, 0);
@@ -2101,6 +1660,7 @@ mod tests {
             is_unread: true,
             updated_at: "19.02.2026".to_string(),
             creator: "Creator".to_string(),
+            school_name: None, user_id: None, school_year: None,
         }];
 
         // Open thread
@@ -2174,9 +1734,9 @@ mod tests {
         let mut app = App::new();
         // Setup: 3 students, header_offset=3 (tabs + borders), students_width=25
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 3, name: "Carol".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 3, name: "Carol".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
         let header_offset = 3;
         let students_width = 25;
@@ -2216,10 +1776,10 @@ mod tests {
 
         // Setup notifications
         app.notifications = vec![
-            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None },
-            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None },
-            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None },
-            Notification { id: Some("4".into()), title: "N4".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None },
+            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
+            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
+            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
+            Notification { id: Some("4".into()), title: "N4".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
         ];
 
         let header_offset = 3;
@@ -2251,8 +1811,8 @@ mod tests {
         app.overview_split_percent = 50; // Schedule takes 50% (rows 0-9)
         app.overview_bottom_split_percent = 60; // Homework takes 60% of bottom (rows 10-15), grades (rows 16-19)
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
 
         let header_offset = 3;
@@ -2295,8 +1855,8 @@ mod tests {
         app.focus = Focus::Content;
 
         app.notifications = vec![
-            Notification { id: Some("1".into()), title: "N1".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None },
-            Notification { id: Some("2".into()), title: "N2".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None },
+            Notification { id: Some("1".into()), title: "N1".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
+            Notification { id: Some("2".into()), title: "N2".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
         ];
 
         // Activate notification at index 1
@@ -2320,8 +1880,8 @@ mod tests {
         app.message_view = MessageView::List;
 
         app.messages = vec![
-            MessageThread { id: 100, subject: "Thread A".into(), last_message: "".into(), last_sender: "".into(), participant_count: 1, is_unread: false, updated_at: "".into(), creator: "".into() },
-            MessageThread { id: 200, subject: "Thread B".into(), last_message: "".into(), last_sender: "".into(), participant_count: 2, is_unread: true, updated_at: "".into(), creator: "".into() },
+            MessageThread { id: 100, subject: "Thread A".into(), last_message: "".into(), last_sender: "".into(), participant_count: 1, is_unread: false, updated_at: "".into(), creator: "".into(), school_name: None, user_id: None, school_year: None },
+            MessageThread { id: 200, subject: "Thread B".into(), last_message: "".into(), last_sender: "".into(), participant_count: 2, is_unread: true, updated_at: "".into(), creator: "".into(), school_name: None, user_id: None, school_year: None },
         ];
 
         // Open thread at index 1
@@ -2344,8 +1904,8 @@ mod tests {
         app.students_pane_width = 30;
         // Need multiple students to show students pane
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
 
         // Content area: (x=0, y=3, width=100, height=40)
@@ -2425,8 +1985,8 @@ mod tests {
         app.students_pane_width = 30;
         // Need multiple students to show students pane
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
 
         let content_area = (0u16, 3u16, 100u16, 40u16);
@@ -2444,8 +2004,8 @@ mod tests {
         app.students_pane_width = 30;
         // Need multiple students to show students pane
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
 
         let content_area = (0u16, 3u16, 100u16, 40u16);
@@ -2497,7 +2057,7 @@ mod tests {
         app.current_tab = Tab::Messages;
         app.message_view = MessageView::List;
         app.messages = vec![
-            MessageThread { id: 100, subject: "Test".into(), last_message: "".into(), last_sender: "".into(), participant_count: 1, is_unread: false, updated_at: "".into(), creator: "".into() },
+            MessageThread { id: 100, subject: "Test".into(), last_message: "".into(), last_sender: "".into(), participant_count: 1, is_unread: false, updated_at: "".into(), creator: "".into(), school_name: None, user_id: None, school_year: None },
         ];
 
         // Clear default history and start fresh
@@ -2557,8 +2117,8 @@ mod tests {
     fn test_student_switch_resets_schedule_date() {
         let mut app = App::new();
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
-            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None, user_id: None, school_year: None }),
         ];
 
         // Navigate schedule to a different day
@@ -2674,88 +2234,66 @@ mod tests {
     }
 
     #[test]
-    fn test_school_contexts_visible_current_year_only() {
+    fn test_school_contexts_active_from_selected() {
         let mut app = App::new();
         app.set_school_contexts(vec![
             ctx(1, 2026, "School A", true),
             ctx(2, 2026, "School B", false),
             ctx(1, 2025, "School A", false),
-            ctx(3, 2024, "School C", false),
         ]);
-
-        // Active context taken from the server's isSelected flag
         assert_eq!(app.active_context, Some((1, 2026)));
-        assert_eq!(app.current_school_year(), Some(2026));
-        assert!(app.has_schools_pane());
 
-        // Only current-year schools are listed by default
-        let visible: Vec<(i64, i64)> = app.visible_contexts().iter().map(|c| c.key()).collect();
-        assert_eq!(visible, vec![(1, 2026), (2, 2026)]);
-        // Cursor sits on the active context
-        assert_eq!(app.selected_context, 0);
-
-        // 'y' reveals previous years too
-        app.toggle_all_years();
-        assert_eq!(app.visible_contexts().len(), 4);
-        app.toggle_all_years();
-        assert_eq!(app.visible_contexts().len(), 2);
-    }
-
-    #[test]
-    fn test_school_contexts_cursor_and_switch() {
-        let mut app = App::new();
-        app.set_school_contexts(vec![
-            ctx(1, 2026, "School A", true),
-            ctx(2, 2026, "School B", false),
-            ctx(3, 2024, "School C", false),
-        ]);
-
-        app.next_school();
-        assert_eq!(app.selected_school().map(|c| c.user_id), Some(2));
-        app.next_school(); // wraps
-        assert_eq!(app.selected_school().map(|c| c.user_id), Some(1));
-        app.prev_school();
-        assert_eq!(app.selected_school().map(|c| c.user_id), Some(2));
-
-        // Switching updates the active context, flags and cursor
+        // Recording a switch updates flags; a later context refresh keeps our choice
         app.set_active_context(2, 2026);
-        assert_eq!(app.active_context, Some((2, 2026)));
         assert!(app.school_contexts.iter().find(|c| c.user_id == 2).unwrap().is_selected);
-        assert!(!app.school_contexts.iter().find(|c| c.user_id == 1).unwrap().is_selected);
-        assert_eq!(app.selected_context, 1);
-
-        // A fresh context list from the server keeps our active choice
-        app.set_school_contexts(vec![
-            ctx(1, 2026, "School A", true),
-            ctx(2, 2026, "School B", false),
-        ]);
+        app.set_school_contexts(vec![ctx(1, 2026, "School A", true), ctx(2, 2026, "School B", false)]);
         assert_eq!(app.active_context, Some((2, 2026)));
     }
 
-    #[test]
-    fn test_active_previous_year_context_stays_visible() {
-        let mut app = App::new();
-        app.set_school_contexts(vec![
-            ctx(1, 2026, "School A", false),
-            ctx(3, 2024, "School C", false),
-        ]);
-        // Token says we're still on the old year's school
-        app.set_active_context(3, 2024);
-
-        let visible: Vec<(i64, i64)> = app.visible_contexts().iter().map(|c| c.key()).collect();
-        assert_eq!(visible, vec![(1, 2026), (3, 2024)]);
-        assert_eq!(app.selected_context, 1);
+    fn student_in(id: i64, name: &str, user_id: i64, school: &str) -> StudentData {
+        StudentData::new(Student {
+            id,
+            name: name.into(),
+            class_name: None,
+            school_name: Some(school.into()),
+            user_id: Some(user_id),
+            school_year: Some(2026),
+        })
     }
 
     #[test]
-    fn test_students_pane_shown_with_single_student_and_many_schools() {
+    fn test_sidebar_rows_grouped_by_school() {
         let mut app = App::new();
         app.students = vec![
-            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+            student_in(1, "Gabriel", 5165378, "МГ"),
+            student_in(2, "Lina", 3562478, "ОУ"),
+            student_in(3, "Rali", 3562478, "ОУ"),
         ];
-        assert!(!app.has_students_pane());
+        assert!(app.has_multiple_schools());
+        assert_eq!(app.sidebar_rows(), vec![
+            SidebarRow::School("МГ".into()),
+            SidebarRow::Student(0),
+            SidebarRow::School("ОУ".into()),
+            SidebarRow::Student(1),
+            SidebarRow::Student(2),
+        ]);
 
-        app.set_school_contexts(vec![ctx(1, 2026, "A", true), ctx(2, 2026, "B", false)]);
-        assert!(app.has_students_pane());
+        // Clicking a header selects nothing; clicking a child selects it.
+        // header_offset 3 + pane border 1 => rows start at absolute row 4
+        assert_eq!(app.click_list_item(4, 3, 0, 30, 20), ClickResult::None);
+        assert_eq!(app.click_list_item(6, 3, 0, 30, 20), ClickResult::None);
+        assert_eq!(app.click_list_item(8, 3, 0, 30, 20), ClickResult::StudentSelected);
+        assert_eq!(app.selected_student, 2);
+    }
+
+    #[test]
+    fn test_sidebar_rows_single_school_has_no_headers() {
+        let mut app = App::new();
+        app.students = vec![
+            student_in(2, "Lina", 3562478, "ОУ"),
+            student_in(3, "Rali", 3562478, "ОУ"),
+        ];
+        assert!(!app.has_multiple_schools());
+        assert_eq!(app.sidebar_rows(), vec![SidebarRow::Student(0), SidebarRow::Student(1)]);
     }
 }

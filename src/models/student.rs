@@ -7,6 +7,12 @@ pub struct Student {
     pub name: String,
     pub class_name: Option<String>,
     pub school_name: Option<String>,
+    /// School context the pupil belongs to (parent user id + school year).
+    /// Per-pupil endpoints only work while the server is on this context.
+    #[serde(default)]
+    pub user_id: Option<i64>,
+    #[serde(default)]
+    pub school_year: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,11 +86,6 @@ impl SchoolContext {
         (self.user_id, self.school_year)
     }
 
-    /// Cache namespace for a context, e.g. "3562478_2025"
-    pub fn cache_key_for(user_id: i64, school_year: i64) -> String {
-        format!("{}_{}", user_id, school_year)
-    }
-
     /// School year id 2025 means the 2025/26 school year
     pub fn year_label(&self) -> String {
         Self::year_label_for(self.school_year)
@@ -127,7 +128,23 @@ impl Student {
             name: pupil.target_name.clone().unwrap_or_else(|| "Unknown".to_string()),
             class_name: pupil.class_year_name.clone(),
             school_name: pupil.school_name.clone(),
+            user_id: None,
+            school_year: None,
         }
+    }
+
+    /// Tag the pupil with the school context it was fetched under
+    pub fn with_context(mut self, ctx: &SchoolContext) -> Self {
+        self.user_id = Some(ctx.user_id);
+        self.school_year = Some(ctx.school_year);
+        if self.school_name.is_none() {
+            self.school_name = Some(ctx.school_name.clone());
+        }
+        self
+    }
+
+    pub fn context(&self) -> Option<(i64, i64)> {
+        Some((self.user_id?, self.school_year?))
     }
 }
 
@@ -187,6 +204,5 @@ mod tests {
         let ctx = &SchoolContext::from_entries(&[entry(3562478, 2025, "S", false)])[0];
         assert_eq!(ctx.year_label(), "2025/26");
         assert_eq!(SchoolContext::year_label_for(2099), "2099/00");
-        assert_eq!(SchoolContext::cache_key_for(3562478, 2025), "3562478_2025");
     }
 }

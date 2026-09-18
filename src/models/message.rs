@@ -127,11 +127,21 @@ pub struct MessageThread {
     pub is_unread: bool,
     pub updated_at: String,
     pub creator: String,
+    /// School context the thread came from (set when aggregating over several schools)
+    #[serde(default)]
+    pub school_name: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<i64>,
+    #[serde(default)]
+    pub school_year: Option<i64>,
 }
 
 impl MessageThread {
     pub fn from_raw(raw: &MessageThreadRaw) -> Self {
         Self {
+            school_name: None,
+            user_id: None,
+            school_year: None,
             id: raw.id.unwrap_or(0),
             subject: raw.subject.clone().unwrap_or_default(),
             last_message: raw.last_msg_body.clone().unwrap_or_default(),

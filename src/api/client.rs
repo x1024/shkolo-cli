@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use reqwest::{Client, header};
 use serde::de::DeserializeOwned;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use crate::models::*;
@@ -18,11 +19,20 @@ pub enum AuthMode {
     Cookie,
 }
 
+/// Mutable auth state shared by all clones of a client. The server keeps the
+/// selected user (school) and year per token, so every clone must see the same
+/// view of "where the server currently is".
+#[derive(Debug, Default)]
+struct AuthState {
+    token: Option<String>,
+    school_year: Option<i64>,
+    user_id: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ShkoloClient {
     client: Client,
-    token: Option<String>,
-    school_year: Option<i64>,
+    state: Arc<RwLock<AuthState>>,
     auth_mode: AuthMode,
     xsrf_token: Option<String>,
 }
@@ -36,43 +46,56 @@ impl ShkoloClient {
 
         Self {
             client,
-            token: None,
-            school_year: None,
+            state: Arc::new(RwLock::new(AuthState::default())),
             auth_mode: AuthMode::Bearer,
             xsrf_token: None,
         }
     }
 
     pub fn with_token(token: String, school_year: Option<i64>) -> Self {
-        let mut client = Self::new();
-        client.token = Some(token);
-        client.school_year = school_year;
+        let client = Self::new();
+        client.set_token(token);
+        if let Some(year) = school_year {
+            client.set_school_year(year);
+        }
         client
     }
 
     pub fn with_cookie(cookie: String, xsrf_token: Option<String>, school_year: Option<i64>) -> Self {
         let mut client = Self::new();
-        client.token = Some(cookie);
+        client.set_token(cookie);
         client.auth_mode = AuthMode::Cookie;
         client.xsrf_token = xsrf_token;
-        client.school_year = school_year;
+        if let Some(year) = school_year {
+            client.set_school_year(year);
+        }
         client
     }
 
-    pub fn token(&self) -> Option<&str> {
-        self.token.as_deref()
+    pub fn token(&self) -> Option<String> {
+        self.state.read().unwrap().token.clone()
     }
 
     pub fn school_year(&self) -> Option<i64> {
-        self.school_year
+        self.state.read().unwrap().school_year
     }
 
-    pub fn set_school_year(&mut self, year_id: i64) {
-        self.school_year = Some(year_id);
+    /// The school context (user id, school year) the server is believed to be on
+    pub fn current_context(&self) -> Option<(i64, i64)> {
+        let state = self.state.read().unwrap();
+        Some((state.user_id?, state.school_year?))
     }
 
-    pub fn set_token(&mut self, token: String) {
-        self.token = Some(token);
+    pub fn set_school_year(&self, year_id: i64) {
+        self.state.write().unwrap().school_year = Some(year_id);
+    }
+
+    pub fn set_token(&self, token: String) {
+        self.state.write().unwrap().token = Some(token);
+    }
+
+    pub fn set_user_id(&self, user_id: Option<i64>) {
+        self.state.write().unwrap().user_id = user_id;
     }
 
     pub fn auth_mode(&self) -> AuthMode {
@@ -92,11 +115,12 @@ impl ShkoloClient {
         headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
         headers.insert("language", "bg".parse().unwrap());
 
+        let state = self.state.read().unwrap();
         match self.auth_mode {
             AuthMode::Bearer => {
                 headers.insert(header::USER_AGENT, USER_AGENT.parse().unwrap());
                 if authorized {
-                    if let Some(ref token) = self.token {
+                    if let Some(ref token) = state.token {
                         headers.insert(
                             header::AUTHORIZATION,
                             format!("Bearer {}", token).parse().unwrap(),
@@ -107,7 +131,7 @@ impl ShkoloClient {
             AuthMode::Cookie => {
                 headers.insert(header::USER_AGENT, WEB_USER_AGENT.parse().unwrap());
                 if authorized {
-                    if let Some(ref cookie) = self.token {
+                    if let Some(ref cookie) = state.token {
                         headers.insert(
                             header::COOKIE,
                             format!("shkolo-cookie={}", cookie).parse().unwrap(),
@@ -120,7 +144,7 @@ impl ShkoloClient {
             }
         }
 
-        if let Some(year) = self.school_year {
+        if let Some(year) = state.school_year {
             headers.insert("School-Year", year.to_string().parse().unwrap());
         }
 
@@ -182,22 +206,11 @@ impl ShkoloClient {
         let response: LoginResponse = self.post("/v1/auth/login", &request, false).await?;
 
         let token = response.token.ok_or_else(|| anyhow!("No token received"))?;
-        self.token = Some(token);
+        self.set_token(token);
 
         // Get users and years to select school year
         let users_response = self.get_users_and_years().await?;
-
-        // Auto-select the selected school year, or the highest one
-        if let Some(ref entries) = users_response.users {
-            // Prefer the entry marked as selected
-            if let Some(selected) = entries.iter().find(|e| e.is_selected == Some(true)) {
-                if let Some(year) = selected.school_year {
-                    self.school_year = Some(year);
-                }
-            } else if let Some(max_year) = entries.iter().filter_map(|e| e.school_year).max() {
-                self.school_year = Some(max_year);
-            }
-        }
+        self.adopt_selected(&users_response);
 
         Ok(users_response)
     }
@@ -211,33 +224,36 @@ impl ShkoloClient {
         let response: LoginResponse = self.post("/v1/auth/google", &request, false).await?;
 
         let token = response.token.ok_or_else(|| anyhow!("No token received from Google auth"))?;
-        self.token = Some(token);
+        self.set_token(token);
 
         // Get users and years
         let users_response = self.get_users_and_years().await?;
-
-        // Auto-select the selected school year, or the highest one
-        if let Some(ref entries) = users_response.users {
-            if let Some(selected) = entries.iter().find(|e| e.is_selected == Some(true)) {
-                if let Some(year) = selected.school_year {
-                    self.school_year = Some(year);
-                }
-            } else if let Some(max_year) = entries.iter().filter_map(|e| e.school_year).max() {
-                self.school_year = Some(max_year);
-            }
-        }
+        self.adopt_selected(&users_response);
 
         Ok(users_response)
     }
 
+    /// Take the server-selected user and year (or the latest year) as the current context
+    fn adopt_selected(&self, users_response: &UsersAndYearsResponse) {
+        if let Some(ref entries) = users_response.users {
+            if let Some(selected) = entries.iter().find(|e| e.is_selected == Some(true)) {
+                if let Some(year) = selected.school_year {
+                    self.set_school_year(year);
+                }
+                self.set_user_id(selected.id);
+            } else if let Some(max_year) = entries.iter().filter_map(|e| e.school_year).max() {
+                self.set_school_year(max_year);
+            }
+        }
+    }
+
     /// Logout from current session
     pub async fn logout(&mut self) -> Result<()> {
-        if self.token.is_some() {
+        if self.token().is_some() {
             let _: serde_json::Value = self.post("/v1/auth/logout", &serde_json::json!({}), true).await
                 .unwrap_or(serde_json::json!({}));
         }
-        self.token = None;
-        self.school_year = None;
+        *self.state.write().unwrap() = AuthState::default();
         Ok(())
     }
 
@@ -255,7 +271,7 @@ impl ShkoloClient {
     /// On success the client's token (if a new one is issued) and School-Year
     /// header are updated. On failure the caller should restore the previous token/year.
     pub async fn switch_user_and_year(
-        &mut self,
+        &self,
         user_id: i64,
         school_year: i64,
         expected_school: Option<&str>,
@@ -271,10 +287,10 @@ impl ShkoloClient {
         // The response echoes the bearer token as `apiToken`; adopt it in case it ever rotates
         if let Some(token) = response.get("apiToken").or_else(|| response.get("token")).and_then(|v| v.as_str()) {
             if !token.is_empty() {
-                self.token = Some(token.to_string());
+                self.set_token(token.to_string());
             }
         }
-        self.school_year = Some(school_year);
+        self.set_school_year(school_year);
 
         let response_ok = response.get("user").and_then(|u| u.get("id")).and_then(|v| v.as_i64()) == Some(user_id)
             && response.get("selectedYear").and_then(|v| v.as_i64()) == Some(school_year);
@@ -304,7 +320,18 @@ impl ShkoloClient {
             ));
         }
 
+        self.set_user_id(Some(user_id));
         Ok(users)
+    }
+
+    /// Switch to the given school context unless the server is already on it.
+    /// Returns whether a switch was made.
+    pub async fn ensure_context(&self, user_id: i64, school_year: i64) -> Result<bool> {
+        if self.current_context() == Some((user_id, school_year)) {
+            return Ok(false);
+        }
+        self.switch_user_and_year(user_id, school_year, None).await?;
+        Ok(true)
     }
 
 

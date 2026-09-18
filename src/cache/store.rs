@@ -69,9 +69,6 @@ impl<T> CachedData<T> {
 pub struct CacheStore {
     cache_dir: PathBuf,
     ttl_seconds: i64,
-    /// Namespace for per-user data (students, notifications, messages).
-    /// None keeps the legacy unscoped file names.
-    context: Option<String>,
 }
 
 impl CacheStore {
@@ -83,25 +80,7 @@ impl CacheStore {
         Ok(Self {
             cache_dir,
             ttl_seconds: ttl_seconds.unwrap_or(DEFAULT_TTL_SECONDS),
-            context: None,
         })
-    }
-
-    /// A copy of this store scoped to a school context (user id + year).
-    /// Per-student data is keyed by pupil id and shared across contexts.
-    pub fn with_context(&self, context: Option<String>) -> Self {
-        Self {
-            cache_dir: self.cache_dir.clone(),
-            ttl_seconds: self.ttl_seconds,
-            context,
-        }
-    }
-
-    fn scoped(&self, name: &str) -> String {
-        match &self.context {
-            Some(ctx) => format!("{}_{}", name, ctx),
-            None => name.to_string(),
-        }
     }
 
     pub fn cache_dir(&self) -> &PathBuf {
@@ -171,12 +150,12 @@ impl CacheStore {
     // Students cache
 
     pub fn load_students(&self) -> Result<CachedData<Vec<Student>>> {
-        self.read_file(&self.scoped("students"))
+        self.read_file("students")
     }
 
     pub fn save_students(&self, students: &[Student]) -> Result<()> {
         let cached = CachedData::new(students.to_vec());
-        self.write_file(&self.scoped("students"), &cached)
+        self.write_file("students", &cached)
     }
 
     pub fn get_students(&self) -> Option<(Vec<Student>, String, bool)> {
@@ -281,12 +260,12 @@ impl CacheStore {
     // Notifications cache (global, not per student)
 
     pub fn load_notifications(&self) -> Result<CachedData<Vec<Notification>>> {
-        self.read_file(&self.scoped("notifications"))
+        self.read_file("notifications")
     }
 
     pub fn save_notifications(&self, notifications: &[Notification]) -> Result<()> {
         let cached = CachedData::new(notifications.to_vec());
-        self.write_file(&self.scoped("notifications"), &cached)
+        self.write_file("notifications", &cached)
     }
 
     pub fn get_notifications(&self) -> Option<(Vec<Notification>, String, bool)> {
@@ -325,12 +304,12 @@ impl CacheStore {
     // Messages cache (global, not per student)
 
     pub fn load_messages(&self) -> Result<CachedData<Vec<MessageThread>>> {
-        self.read_file(&self.scoped("messages"))
+        self.read_file("messages")
     }
 
     pub fn save_messages(&self, messages: &[MessageThread]) -> Result<()> {
         let cached = CachedData::new(messages.to_vec());
-        self.write_file(&self.scoped("messages"), &cached)
+        self.write_file("messages", &cached)
     }
 
     pub fn get_messages(&self) -> Option<(Vec<MessageThread>, String, bool)> {

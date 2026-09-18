@@ -233,8 +233,6 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("SHKOLO_CACHE_TTL").ok().and_then(|v| v.parse().ok()));
 
     let cache = CacheStore::new(ttl)?;
-    // Students, notifications and messages are cached per school context
-    let cache = cache.with_context(token_context_key(&cache));
 
     // Resolve language: --lang flag > persisted ui_config > SHKOLO_LANG env > default (Bg)
     let lang = if let Some(ref lang_str) = cli.lang {
@@ -275,7 +273,7 @@ async fn run_json_command(
     no_cache: bool,
     format: &str,
 ) -> Result<()> {
-    let mut client = get_authenticated_client(cache)?;
+    let client = get_authenticated_client(cache)?;
 
     match command {
         JsonCommands::Students => {
@@ -291,6 +289,7 @@ async fn run_json_command(
             let mut oldest_cache: Option<String> = None;
 
             for s in selected {
+                ensure_student_context(&client, cache, s).await?;
                 let (homework, cached, cached_at) = get_homework(&client, cache, s.id, force_refresh || no_cache).await?;
                 if cached {
                     any_cached = true;
@@ -315,6 +314,7 @@ async fn run_json_command(
             let mut oldest_cache: Option<String> = None;
 
             for s in selected {
+                ensure_student_context(&client, cache, s).await?;
                 let (grades, cached, cached_at) = get_grades(&client, cache, s.id, force_refresh || no_cache).await?;
                 if cached {
                     any_cached = true;
@@ -340,6 +340,7 @@ async fn run_json_command(
             let mut oldest_cache: Option<String> = None;
 
             for s in selected {
+                ensure_student_context(&client, cache, s).await?;
                 let (schedule, cached, cached_at) = get_schedule(&client, cache, s.id, &date, force_refresh || no_cache).await?;
                 if cached {
                     any_cached = true;
@@ -363,6 +364,7 @@ async fn run_json_command(
             let mut summaries = Vec::new();
 
             for s in &students {
+                ensure_student_context(&client, cache, s).await?;
                 let (homework, _, _) = get_homework(&client, cache, s.id, force_refresh || no_cache).await?;
                 let (grades, _, _) = get_grades(&client, cache, s.id, force_refresh || no_cache).await?;
                 let (schedule, _, _) = get_schedule(&client, cache, s.id, &date, force_refresh || no_cache).await?;
@@ -389,6 +391,7 @@ async fn run_json_command(
             let mut oldest_cache: Option<String> = None;
 
             for s in selected {
+                ensure_student_context(&client, cache, s).await?;
                 let (absences, cached, cached_at) = get_absences(&client, cache, s.id, force_refresh || no_cache).await?;
                 if cached {
                     any_cached = true;
@@ -416,6 +419,7 @@ async fn run_json_command(
             let mut oldest_cache: Option<String> = None;
 
             for s in selected {
+                ensure_student_context(&client, cache, s).await?;
                 let (feedbacks, cached, cached_at) = get_feedbacks(&client, cache, s.id, force_refresh || no_cache).await?;
                 if cached {
                     any_cached = true;
@@ -518,7 +522,7 @@ async fn run_json_command(
                 "school_year": year,
                 "year_label": SchoolContext::year_label_for(year),
                 "school_name": school_name,
-                "token_changed": cache.load_token().map(|t| t.token != client.token().unwrap_or_default()).unwrap_or(false),
+                "token_changed": cache.load_token().map(|t| Some(t.token) != client.token()).unwrap_or(false),
             }), false, None), format)?;
         }
         JsonCommands::Thread { thread_id } => {
@@ -536,6 +540,7 @@ async fn run_json_command(
             let selected = select_students(&students, student.as_deref());
 
             if let Some(s) = selected.first() {
+                ensure_student_context(&client, cache, s).await?;
                 match client.get_feedbacks_raw(s.id).await {
                     Ok(data) => output_json(&api::ApiResponse::new(data, false, None), format)?,
                     Err(e) => output_json(&api::ApiResponse::new(serde_json::json!({
@@ -555,9 +560,7 @@ async fn run_json_command(
 }
 
 async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
-    let mut client = get_authenticated_client(cache)?;
-    // Owned copy so the cache can be re-scoped when the school context changes
-    let mut cache: CacheStore = cache.clone();
+    let client = get_authenticated_client(cache)?;
 
     // Create app (before raw mode so we can print errors)
     let mut app = App::new();
@@ -606,19 +609,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Load cached data first
-    app.load_from_cache(&cache).await;
-
-    // If no cached data, refresh
-    if app.students.is_empty() {
-        // Show loading state
-        app.loading = true;
-        app.set_status(T::loading_data(app.lang));
-        terminal.draw(|f| draw(f, &app))?;
-
-        if let Err(e) = app.refresh_data(&client, &cache, false).await {
-            app.set_status(format!("{} {}", T::error_prefix(app.lang), e));
-        }
-    }
+    app.load_from_cache(cache).await;
 
     // Main loop - async event handling with background refresh
     let mut last_time_update = std::time::Instant::now();
@@ -641,9 +632,6 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
     };
 
     loop {
-        // A school switch requested by key or mouse this iteration; handled after the select!
-        let mut pending_switch: Option<(i64, i64)> = None;
-
         // Update time periodically for schedule highlighting (once per minute is enough)
         if last_time_update.elapsed() >= Duration::from_secs(60) {
             app.update_time();
@@ -788,6 +776,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                     app.set_status(T::loading_thread(app.lang));
                                     terminal.draw(|f| draw(f, &app))?;
 
+                                    let _ = ensure_thread_context(&client, cache, &mut app, thread_id).await;
                                     match client.get_thread_messages(thread_id).await {
                                         Ok(messages) => {
                                             app.thread_messages = messages;
@@ -810,6 +799,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                         app.set_status(T::sending(app.lang));
                                         terminal.draw(|f| draw(f, &app))?;
 
+                                        let _ = ensure_thread_context(&client, cache, &mut app, thread_id).await;
                                         match client.reply_to_thread(thread_id, &message).await {
                                             Ok(_) => {
                                                 // Reload thread messages
@@ -857,8 +847,8 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                     match client.create_thread(&recipients, &subject, &body).await {
                                         Ok(_) => {
                                             app.set_status(T::message_sent(app.lang));
-                                            // Refresh messages list
-                                            if let Ok(messages) = app.fetch_messages(&client).await {
+                                            // Refresh messages list (all schools)
+                                            if let Ok((messages, _, _)) = get_messages(&client, cache, true).await {
                                                 app.messages = messages;
                                             }
                                         }
@@ -867,9 +857,6 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                         }
                                     }
                                     app.loading = false;
-                                }
-                                Action::SwitchSchool { user_id, school_year } if background_task.is_none() => {
-                                    pending_switch = Some((user_id, school_year));
                                 }
                                 Action::NavigateBack | Action::NavigateForward => {
                                     // Navigation was handled in the handler, but we may need
@@ -880,6 +867,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                             app.set_status(T::loading_thread(app.lang));
                                             terminal.draw(|f| draw(f, &app))?;
 
+                                            let _ = ensure_thread_context(&client, cache, &mut app, thread_id).await;
                                             match client.get_thread_messages(thread_id).await {
                                                 Ok(messages) => {
                                                     app.thread_messages = messages;
@@ -898,7 +886,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                 Action::None => {}
                                 // These are handled by guards above (when background_task.is_none())
                                 // If we get here, a background task is already running
-                                Action::Refresh | Action::RefreshAll | Action::RefreshSchedule | Action::SwitchSchool { .. } => {
+                                Action::Refresh | Action::RefreshAll | Action::RefreshSchedule => {
                                     // Already refreshing, ignore
                                 }
                             }
@@ -943,6 +931,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                                     if let Some(thread_id) = app.open_thread_at(index) {
                                                         // Load thread messages
                                                         app.set_status(T::loading_thread(app.lang));
+                                                        let _ = ensure_thread_context(&client, cache, &mut app, thread_id).await;
                                                         match client.get_thread_messages(thread_id).await {
                                                             Ok(messages) => {
                                                                 app.thread_messages = messages;
@@ -953,11 +942,6 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                                                 app.close_thread();
                                                             }
                                                         }
-                                                    }
-                                                }
-                                                ClickResult::SwitchSchool(user_id, school_year) => {
-                                                    if background_task.is_none() {
-                                                        pending_switch = Some((user_id, school_year));
                                                     }
                                                 }
                                                 ClickResult::ItemSelected(_) | ClickResult::StudentSelected | ClickResult::None => {}
@@ -988,27 +972,6 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                 }
             }
         } // end tokio::select!
-
-        if let Some((user_id, school_year)) = pending_switch.take() {
-            let school_name = app.school_contexts.iter()
-                .find(|c| c.user_id == user_id && c.school_year == school_year)
-                .map(|c| c.school_name.clone())
-                .unwrap_or_else(|| format!("#{}", user_id));
-            app.set_status(format!("{} {}...", T::switching_school(app.lang), school_name));
-            terminal.draw(|f| draw(f, &app))?;
-
-            if switch_school_context(&mut client, &mut cache, &mut app, user_id, school_year).await.is_ok() {
-                // Cached data for the new school is shown already; fetch whatever is stale
-                app.loading = true;
-                let client_clone = client.clone();
-                let cache_clone = cache.clone();
-                let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
-                background_task = Some(Box::pin(async move {
-                    refresh_data_background(&client_clone, &cache_clone, false, student_ids).await
-                }));
-                last_auto_refresh = std::time::Instant::now();
-            }
-        }
 
         if !app.running {
             break;
@@ -1129,7 +1092,7 @@ async fn login(cache: &CacheStore, username: Option<String>, password: Option<St
     // Save token
     let user_data = serde_json::to_value(&response)?;
     cache.save_token(
-        client.token().unwrap(),
+        &client.token().unwrap(),
         client.school_year(),
         selected_user_id(&response),
         Some(user_data.clone()),
@@ -1199,7 +1162,7 @@ async fn login_google(cache: &CacheStore, token: Option<String>, lang: Lang) -> 
     // Save token
     let user_data = serde_json::to_value(&response)?;
     cache.save_token(
-        client.token().unwrap(),
+        &client.token().unwrap(),
         client.school_year(),
         selected_user_id(&response),
         Some(user_data),
@@ -1456,15 +1419,17 @@ fn get_authenticated_client(cache: &CacheStore) -> Result<ShkoloClient> {
         .map_err(|_| anyhow!("Not authenticated. Run 'shkolo login' or 'shkolo import-token' first."))?;
 
     let is_cookie = token_data.auth_type.as_deref() == Some("cookie");
-    if is_cookie {
-        Ok(ShkoloClient::with_cookie(
+    let client = if is_cookie {
+        ShkoloClient::with_cookie(
             token_data.token,
             token_data.xsrf_token,
             token_data.school_year,
-        ))
+        )
     } else {
-        Ok(ShkoloClient::with_token(token_data.token, token_data.school_year))
-    }
+        ShkoloClient::with_token(token_data.token, token_data.school_year)
+    };
+    client.set_user_id(token_data.user_id);
+    Ok(client)
 }
 
 async fn get_students(
@@ -1481,20 +1446,36 @@ async fn get_students(
         }
     }
 
-    // Fetch from API
-    let pupils_response = client.get_pupils().await?;
+    // Fetch from API: the pupils endpoint only returns the selected school's children,
+    // so visit every school of the current year and tag the pupils with their school
+    let contexts = current_contexts(client, cache).await;
+    let mut students = Vec::new();
+    if contexts.is_empty() {
+        students.extend(fetch_pupils(client).await?);
+    } else {
+        for ctx in &contexts {
+            ensure_context_persisted(client, cache, ctx.user_id, ctx.school_year).await?;
+            students.extend(fetch_pupils(client).await?.into_iter().map(|s| s.with_context(ctx)));
+        }
+    }
 
+    // Group by school, then by name (stable order for the sidebar)
+    students.sort_by(|a, b| a.school_name.cmp(&b.school_name).then_with(|| a.name.cmp(&b.name)));
+    cache.save_students(&students)?;
+
+    Ok((students, false, Some("just now".to_string())))
+}
+
+/// Children of the school the server is currently on
+async fn fetch_pupils(client: &ShkoloClient) -> Result<Vec<Student>> {
+    let pupils_response = client.get_pupils().await?;
     let mut students = Vec::new();
     if let Some(child_pupils) = pupils_response.child_pupils {
         for (id, pupil) in child_pupils {
             students.push(Student::from_child_pupil(&id, &pupil));
         }
     }
-
-    students.sort_by(|a, b| a.name.cmp(&b.name));
-    cache.save_students(&students)?;
-
-    Ok((students, false, Some("just now".to_string())))
+    Ok(students)
 }
 
 async fn get_homework(
@@ -1706,19 +1687,100 @@ async fn get_notifications(
         }
     }
 
-    // Fetch from API
-    let response = client.get_notifications(1).await?;
-
-    let notifications: Vec<Notification> = response.data
-        .or(response.notifications)
-        .unwrap_or_default()
-        .iter()
-        .map(Notification::from_raw)
-        .collect();
+    // Fetch from every current-year school (notifications are per parent user)
+    let contexts = current_contexts(client, cache).await;
+    let mut notifications = Vec::new();
+    if contexts.is_empty() {
+        notifications = fetch_notifications(client).await?;
+    } else {
+        for ctx in &contexts {
+            ensure_context_persisted(client, cache, ctx.user_id, ctx.school_year).await?;
+            for mut n in fetch_notifications(client).await? {
+                n.school_name = Some(ctx.school_name.clone());
+                n.user_id = Some(ctx.user_id);
+                n.school_year = Some(ctx.school_year);
+                notifications.push(n);
+            }
+        }
+    }
+    // Newest first; tie-break on id for a stable order
+    notifications.sort_by(|a, b| {
+        date_key(&b.date).cmp(&date_key(&a.date)).then_with(|| b.id.cmp(&a.id))
+    });
 
     cache.save_notifications(&notifications)?;
 
     Ok((notifications, false, Some("just now".to_string())))
+}
+
+/// Notifications of the school the server is currently on
+async fn fetch_notifications(client: &ShkoloClient) -> Result<Vec<Notification>> {
+    let response = client.get_notifications(1).await?;
+    Ok(response.data
+        .or(response.notifications)
+        .unwrap_or_default()
+        .iter()
+        .map(Notification::from_raw)
+        .collect())
+}
+
+/// Message threads from every current-year school (the messenger is per parent user)
+async fn get_messages(
+    client: &ShkoloClient,
+    cache: &CacheStore,
+    force_refresh: bool,
+) -> Result<(Vec<MessageThread>, bool, Option<String>)> {
+    if !force_refresh {
+        if let Some((messages, age, expired)) = cache.get_messages() {
+            if !expired {
+                return Ok((messages, true, Some(age)));
+            }
+        }
+    }
+
+    let contexts = current_contexts(client, cache).await;
+    let mut messages = Vec::new();
+    if contexts.is_empty() {
+        messages = fetch_messages(client).await?;
+    } else {
+        for ctx in &contexts {
+            ensure_context_persisted(client, cache, ctx.user_id, ctx.school_year).await?;
+            for mut m in fetch_messages(client).await? {
+                m.school_name = Some(ctx.school_name.clone());
+                m.user_id = Some(ctx.user_id);
+                m.school_year = Some(ctx.school_year);
+                messages.push(m);
+            }
+        }
+    }
+    messages.sort_by(|a, b| {
+        date_key(&b.updated_at).cmp(&date_key(&a.updated_at)).then_with(|| b.id.cmp(&a.id))
+    });
+
+    cache.save_messages(&messages)?;
+
+    Ok((messages, false, Some("just now".to_string())))
+}
+
+/// Message threads of the school the server is currently on
+async fn fetch_messages(client: &ShkoloClient) -> Result<Vec<MessageThread>> {
+    let raw_threads = client.get_messenger_threads(None).await?;
+    Ok(raw_threads.iter().map(MessageThread::from_raw).collect())
+}
+
+/// Sort key for API dates: "DD.MM.YYYY[ HH:MM]" becomes "YYYY-MM-DD[ HH:MM]",
+/// anything else (ISO already) is used as is
+fn date_key(date: &str) -> String {
+    let (day_part, rest) = match date.split_once(' ') {
+        Some((d, r)) => (d, format!(" {}", r)),
+        None => (date, String::new()),
+    };
+    let parts: Vec<&str> = day_part.split('.').collect();
+    if parts.len() == 3 && parts[2].len() == 4 {
+        format!("{}-{}-{}{}", parts[2], parts[1], parts[0], rest)
+    } else {
+        date.to_string()
+    }
 }
 
 fn select_students<'a>(students: &'a [Student], selector: Option<&str>) -> Vec<&'a Student> {
@@ -1781,28 +1843,64 @@ async fn refresh_data_background(
     force_refresh: bool,
     _student_ids: Vec<i64>,
 ) -> Result<BackgroundResult> {
-    // Fetch students
+    // Where the server was before we started hopping between schools
+    let home_context = client.current_context();
+
+    // Fetch students of all current-year schools
     let (students, _, _) = get_students(client, cache, force_refresh).await?;
 
-    // Fetch data for each student
+    // Fetch data for each student (per-pupil endpoints need the pupil's school selected)
     let mut student_data_list = Vec::new();
     let today = get_today_date();
 
     for student in students {
-        let (homework, _, hw_age) = get_homework(client, cache, student.id, force_refresh).await?;
-        let (grades, _, grades_age) = get_grades(client, cache, student.id, force_refresh).await?;
-        let (absences, _, absences_age) = get_absences(client, cache, student.id, force_refresh).await?;
-        let (feedbacks, _, feedbacks_age) = get_feedbacks(client, cache, student.id, force_refresh).await?;
+        ensure_student_context(client, cache, &student).await?;
+
+        // A single failed call (the API returns sporadic 502s) must not hide the
+        // whole refresh: fall back to whatever is cached for that item.
+        let (homework, _, hw_age) = match get_homework(client, cache, student.id, force_refresh).await {
+            Ok(r) => r,
+            Err(_) => cached_or_empty(cache.get_homework(student.id)),
+        };
+        let (grades, _, grades_age) = match get_grades(client, cache, student.id, force_refresh).await {
+            Ok(r) => r,
+            Err(_) => cached_or_empty(cache.get_grades(student.id)),
+        };
+        let (absences, _, absences_age) = match get_absences(client, cache, student.id, force_refresh).await {
+            Ok(r) => r,
+            Err(_) => cached_or_empty(cache.get_absences(student.id)),
+        };
+        let (feedbacks, _, feedbacks_age) = match get_feedbacks(client, cache, student.id, force_refresh).await {
+            Ok(r) => r,
+            Err(_) => cached_or_empty(cache.get_feedbacks(student.id)),
+        };
 
         // Get schedule - use today for background refresh
-        let (schedule, _, schedule_age) = get_schedule(client, cache, student.id, &today, force_refresh).await?;
+        let (schedule, _, schedule_age) = match get_schedule(client, cache, student.id, &today, force_refresh).await {
+            Ok(r) => r,
+            Err(_) => cached_or_empty(cache.get_schedule(student.id, &today)),
+        };
+
+        // Events (upcoming tests etc.); cached copy if the API call fails
+        let events = match client.get_pupil_events(student.id).await {
+            Ok(response) => {
+                let events: Vec<models::Event> = response.invitations
+                    .unwrap_or_default()
+                    .iter()
+                    .map(models::Event::from_raw)
+                    .collect();
+                let _ = cache.save_events(student.id, &events);
+                events
+            }
+            Err(_) => cache.get_events(student.id).map(|(e, _, _)| e).unwrap_or_default(),
+        };
 
         student_data_list.push(StudentData {
             student,
             homework,
             grades,
             schedule,
-            events: Vec::new(), // TODO: fetch events
+            events,
             absences,
             feedbacks,
             homework_age: hw_age,
@@ -1826,6 +1924,7 @@ async fn refresh_data_background(
     // If effective date differs from today, fetch next school day's schedule for all students
     if effective_date != today {
         for data in &mut student_data_list {
+            ensure_student_context(client, cache, &data.student).await?;
             if let Ok((schedule, _, schedule_age)) = get_schedule(client, cache, data.student.id, &effective_date, force_refresh).await {
                 data.schedule = schedule;
                 data.schedule_age = schedule_age;
@@ -1833,17 +1932,25 @@ async fn refresh_data_background(
         }
     }
 
-    // Fetch notifications
+    // Notifications and messages from all schools
     let (notifications, _, _) = get_notifications(client, cache, force_refresh).await?;
+    let messages = get_messages(client, cache, force_refresh).await.map(|(m, _, _)| m).unwrap_or_default();
 
-    // Fetch messages
-    let messages: Vec<MessageThread> = match client.get_messenger_threads(None).await {
-        Ok(raw_threads) => raw_threads.iter().map(MessageThread::from_raw).collect(),
-        Err(_) => Vec::new(),
-    };
-
-    // Refresh the list of school contexts (non-fatal if it fails)
+    // Refresh the list of school contexts (non-fatal if it fails) and keep it in the token file
     let contexts = client.get_users_and_years().await.ok().and_then(|r| r.users);
+    if let Some(ref entries) = contexts {
+        if let Ok(mut token_data) = cache.load_token() {
+            if let Ok(json) = serde_json::to_value(entries) {
+                store_users_in_token(&mut token_data, json);
+                let _ = cache.save_token_full(&token_data);
+            }
+        }
+    }
+
+    // Leave the server where it was (this also keeps the mobile app on its school)
+    if let Some((user_id, school_year)) = home_context {
+        let _ = ensure_context_persisted(client, cache, user_id, school_year).await;
+    }
 
     Ok(BackgroundResult::DataRefresh {
         students: student_data_list,
@@ -1854,6 +1961,14 @@ async fn refresh_data_background(
     })
 }
 
+/// Cached data (even if expired) in the shape the get_* helpers return, or nothing
+fn cached_or_empty<T>(cached: Option<(Vec<T>, String, bool)>) -> (Vec<T>, bool, Option<String>) {
+    match cached {
+        Some((data, age, _)) => (data, true, Some(age)),
+        None => (Vec::new(), false, None),
+    }
+}
+
 /// Refresh schedule for a specific student/date in the background
 async fn refresh_schedule_background(
     client: &ShkoloClient,
@@ -1861,7 +1976,17 @@ async fn refresh_schedule_background(
     student_id: i64,
     date: &str,
 ) -> Result<BackgroundResult> {
-    let (schedule, _, _) = get_schedule(client, cache, student_id, date, true).await?;
+    let home_context = client.current_context();
+    if let Some((students, _, _)) = cache.get_students() {
+        if let Some(student) = students.iter().find(|s| s.id == student_id) {
+            ensure_student_context(client, cache, student).await?;
+        }
+    }
+    let result = get_schedule(client, cache, student_id, date, true).await;
+    if let Some((user_id, school_year)) = home_context {
+        let _ = ensure_context_persisted(client, cache, user_id, school_year).await;
+    }
+    let (schedule, _, _) = result?;
 
     Ok(BackgroundResult::ScheduleRefresh {
         student_id,
@@ -1872,10 +1997,62 @@ async fn refresh_schedule_background(
 
 // --- School context helpers ---
 
-/// Cache namespace for the school context stored in the token file
-fn token_context_key(cache: &CacheStore) -> Option<String> {
-    let token = cache.load_token().ok()?;
-    Some(SchoolContext::cache_key_for(token.user_id?, token.school_year?))
+/// School contexts of the current school year. Read from the token file; fetched
+/// live (and stored) when the file has none yet. Empty for accounts with no context info.
+async fn current_contexts(client: &ShkoloClient, cache: &CacheStore) -> Vec<SchoolContext> {
+    let mut contexts = cache.load_token().map(|t| contexts_from_token(&t)).unwrap_or_default();
+    if contexts.is_empty() {
+        if let Ok(response) = client.get_users_and_years().await {
+            if let Some(entries) = response.users {
+                if let Ok(mut token_data) = cache.load_token() {
+                    if let Ok(json) = serde_json::to_value(&entries) {
+                        store_users_in_token(&mut token_data, json);
+                        let _ = cache.save_token_full(&token_data);
+                    }
+                }
+                contexts = SchoolContext::from_entries(&entries);
+            }
+        }
+    }
+    let current = SchoolContext::current_year(&contexts);
+    contexts.retain(|c| c.is_current(current));
+    contexts
+}
+
+/// Make sure the server is on the given school context; on a switch, record it in the token file
+async fn ensure_context_persisted(client: &ShkoloClient, cache: &CacheStore, user_id: i64, school_year: i64) -> Result<bool> {
+    let switched = client.ensure_context(user_id, school_year).await?;
+    if switched {
+        if let Ok(mut token_data) = cache.load_token() {
+            if let Some(token) = client.token() {
+                token_data.token = token;
+            }
+            token_data.user_id = Some(user_id);
+            token_data.school_year = Some(school_year);
+            let _ = cache.save_token_full(&token_data);
+        }
+    }
+    Ok(switched)
+}
+
+/// Select the school a pupil belongs to before calling per-pupil endpoints
+async fn ensure_student_context(client: &ShkoloClient, cache: &CacheStore, student: &Student) -> Result<()> {
+    if let Some((user_id, school_year)) = student.context() {
+        ensure_context_persisted(client, cache, user_id, school_year).await?;
+    }
+    Ok(())
+}
+
+/// Select the school a message thread belongs to (threads are per parent user)
+async fn ensure_thread_context(client: &ShkoloClient, cache: &CacheStore, app: &mut App, thread_id: i64) -> Result<()> {
+    let context = app.messages.iter()
+        .find(|m| m.id == thread_id)
+        .and_then(|m| Some((m.user_id?, m.school_year?)));
+    if let Some((user_id, school_year)) = context {
+        ensure_context_persisted(client, cache, user_id, school_year).await?;
+        app.set_active_context(user_id, school_year);
+    }
+    Ok(())
 }
 
 /// The parent user id the server marks as selected after login
@@ -1916,7 +2093,7 @@ fn persist_context_switch(
 ) {
     if let Ok(mut token_data) = cache.load_token() {
         if let Some(token) = client.token() {
-            token_data.token = token.to_string();
+            token_data.token = token;
         }
         token_data.school_year = Some(school_year);
         token_data.user_id = Some(user_id);
@@ -1924,63 +2101,5 @@ fn persist_context_switch(
             store_users_in_token(&mut token_data, json);
         }
         let _ = cache.save_token_full(&token_data);
-    }
-}
-
-/// Switch the TUI to another school context: switch on the server, persist it,
-/// re-scope the cache and show whatever is cached for that school.
-/// On failure the client is restored and an error is shown in the TUI.
-async fn switch_school_context(
-    client: &mut ShkoloClient,
-    cache: &mut CacheStore,
-    app: &mut App,
-    user_id: i64,
-    school_year: i64,
-) -> Result<()> {
-    let school_name = app.school_contexts.iter()
-        .find(|c| c.user_id == user_id && c.school_year == school_year)
-        .map(|c| c.school_name.clone())
-        .unwrap_or_else(|| format!("#{}", user_id));
-
-    let prev_token = client.token().map(|t| t.to_string());
-    let prev_year = client.school_year();
-    let prev_context = app.active_context;
-
-    match client.switch_user_and_year(user_id, school_year, Some(&school_name)).await {
-        Ok(users) => {
-            persist_context_switch(cache, client, &users, user_id, school_year);
-            *cache = cache.with_context(Some(SchoolContext::cache_key_for(user_id, school_year)));
-
-            app.set_active_context(user_id, school_year);
-            if let Some(entries) = &users.users {
-                app.set_school_contexts(SchoolContext::from_entries(entries));
-            }
-
-            // Drop the previous school's data and load what is cached for this one
-            app.students.clear();
-            app.notifications.clear();
-            app.messages.clear();
-            app.selected_student = 0;
-            app.list_offset = 0;
-            app.load_from_cache(cache).await;
-
-            app.set_status(format!("{}: {}", T::switched_school(app.lang), school_name));
-            Ok(())
-        }
-        Err(e) => {
-            // Best effort: put the server back on the previous context, then restore the client
-            if let Some((prev_user, prev_school_year)) = prev_context {
-                let _ = client.switch_user_and_year(prev_user, prev_school_year, None).await;
-            }
-            if let Some(token) = prev_token {
-                client.set_token(token);
-            }
-            if let Some(year) = prev_year {
-                client.set_school_year(year);
-            }
-            app.sync_context_cursor();
-            app.set_error(T::school_switch_failed(app.lang, &school_name, &e.to_string()));
-            Err(e)
-        }
     }
 }

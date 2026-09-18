@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::i18n::T;
-use super::app::{App, Focus, Tab, InputMode, MessageView, calculate_scroll};
+use super::app::{App, Focus, Tab, InputMode, MessageView, calculate_scroll, SidebarRow};
 use super::handlers::get_keybindings;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -195,11 +195,8 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
         _ => {}
     }
 
-    // Students pane: more than one student, or several schools to choose from
-    let show_students_pane = app.has_students_pane();
-    let show_years_pane = app.has_schools_pane();
-
-    let content_area = if show_students_pane || show_years_pane {
+    // Only show students pane if there's more than one student
+    let content_area = if app.has_students_pane() {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -208,24 +205,7 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
             ])
             .split(area);
 
-        // Split sidebar vertically: students on top, schools on bottom
-        if show_students_pane && show_years_pane {
-            let schools_height = app.schools_pane_height();
-            let sidebar = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(5),                      // Students
-                    Constraint::Length(schools_height),      // Schools
-                ])
-                .split(chunks[0]);
-            draw_students_list(frame, app, sidebar[0]);
-            draw_schools_list(frame, app, sidebar[1]);
-        } else if show_students_pane {
-            draw_students_list(frame, app, chunks[0]);
-        } else {
-            draw_schools_list(frame, app, chunks[0]);
-        }
-
+        draw_students_list(frame, app, chunks[0]);
         chunks[1]
     } else {
         area
@@ -246,29 +226,39 @@ fn draw_students_list(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
     let is_focused = app.focus == Focus::Students;
 
-    let items: Vec<ListItem> = app.students
-        .iter()
-        .enumerate()
-        .map(|(i, data)| {
-            let is_selected = i == app.selected_student;
-            let style = if is_selected {
-                if is_focused {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    // With several schools: school header rows, children indented beneath them
+    let grouped = app.has_multiple_schools();
+    let indent = if grouped { "  " } else { "" };
+
+    let items: Vec<ListItem> = app.sidebar_rows()
+        .into_iter()
+        .map(|row| match row {
+            SidebarRow::School(name) => {
+                ListItem::new(name)
+                    .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            }
+            SidebarRow::Student(i) => {
+                let data = &app.students[i];
+                let is_selected = i == app.selected_student;
+                let style = if is_selected {
+                    if is_focused {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    }
                 } else {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                }
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
+                    Style::default().fg(Color::DarkGray)
+                };
 
-            let prefix = if is_selected { "> " } else { "  " };
-            let class_suffix = data.student.class_name
-                .as_ref()
-                .map(|c| format!(" {}", c))
-                .unwrap_or_default();
+                let prefix = if is_selected { "> " } else { "  " };
+                let class_suffix = data.student.class_name
+                    .as_ref()
+                    .map(|c| format!(" {}", c))
+                    .unwrap_or_default();
 
-            ListItem::new(format!("{}{}{}", prefix, data.student.name, class_suffix))
-                .style(style)
+                ListItem::new(format!("{}{}{}{}", indent, prefix, data.student.name, class_suffix))
+                    .style(style)
+            }
         })
         .collect();
 
@@ -279,59 +269,6 @@ fn draw_students_list(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let title = format!(" {} ", T::students(lang));
-    let list = List::new(items)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style)
-            .title(title));
-
-    frame.render_widget(list, area);
-}
-
-fn draw_schools_list(frame: &mut Frame, app: &App, area: Rect) {
-    let lang = app.lang;
-    let is_focused = app.focus == Focus::Schools;
-    let current_year = app.current_school_year();
-
-    let items: Vec<ListItem> = app.visible_contexts()
-        .iter()
-        .enumerate()
-        .map(|(i, ctx)| {
-            let is_cursor = i == app.selected_context;
-            let is_active = Some(ctx.key()) == app.active_context;
-
-            // Active school is bright; the cursor is yellow only while the pane has focus
-            let style = if is_cursor && is_focused {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else if is_active {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-
-            let prefix = if is_active { "● " } else if is_cursor && is_focused { "> " } else { "  " };
-            // Show the year for anything that is not from the current school year
-            let year_suffix = if app.show_all_years || !ctx.is_current(current_year) {
-                format!(" {}", ctx.year_label())
-            } else {
-                String::new()
-            };
-            ListItem::new(format!("{}{}{}", prefix, ctx.school_name, year_suffix))
-                .style(style)
-        })
-        .collect();
-
-    let border_style = if is_focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
-    };
-
-    let title = if app.show_all_years {
-        format!(" {} ", T::schools_all_years(lang))
-    } else {
-        format!(" {} ", T::schools(lang))
-    };
     let list = List::new(items)
         .block(Block::default()
             .borders(Borders::ALL)

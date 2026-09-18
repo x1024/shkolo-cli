@@ -86,7 +86,8 @@ shkolo json summary
 # List schools (one parent "user" per school) for the current school year
 shkolo json schools [--all-years]
 
-# Switch the active school; students/homework/etc. then come from that school
+# Children in several schools are listed together; per-child commands select the
+# right school automatically. Manual switch of the server-side active school:
 shkolo json switch-school --user-id <id> [--year <school_year_id>]
 ```
 
@@ -102,9 +103,7 @@ shkolo tui
 |-----|--------|
 | `←` `→` `h` `l` | Switch tabs |
 | `↑` `↓` `j` `k` | Navigate lists |
-| `Tab` | Toggle focus (students/schools/content) |
-| `Enter` | In the Schools pane: switch to the highlighted school |
-| `y` | Show/hide schools from previous school years |
+| `Tab` | Toggle focus (students/content) |
 | `1-5` | Quick select student |
 | `Enter` | Open/activate item |
 | `r` | Refresh data |
