@@ -258,9 +258,14 @@ impl ShkoloClient {
         self.get(&format!("/v1/diary/homeworks/list/{}", cyc_group_id)).await
     }
 
-    /// Get grades summary for a pupil
+    /// Get grades summary for a pupil (legacy, no dates/comments)
     pub async fn get_grades_summary(&self, pupil_id: i64) -> Result<GradesSummaryResponse> {
         self.get(&format!("/v1/diary/pupils/{}/grades/summary", pupil_id)).await
+    }
+
+    /// Get detailed grades for a pupil (includes dates, comments, types)
+    pub async fn get_grades(&self, pupil_id: i64) -> Result<GradesListResponse> {
+        self.get(&format!("/v1/diary/pupils/{}/grades", pupil_id)).await
     }
 
     /// Get schedule for a pupil on a specific date

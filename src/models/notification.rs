@@ -68,7 +68,12 @@ impl Notification {
                 .unwrap_or_default(),
             is_read,
             notification_type: raw.notification_trigger_slug.clone()
-                .or_else(|| raw.notification_type.clone()),
+                .or_else(|| raw.notification_type.clone())
+                .map(|t| {
+                    // Normalize: API returns "trigger.new.homework", we want "new_homework"
+                    let t = t.strip_prefix("trigger.").unwrap_or(&t).to_string();
+                    t.replace('.', "_")
+                }),
             pupil_names,
         }
     }

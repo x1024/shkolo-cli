@@ -373,8 +373,9 @@ fn draw_overview_schedule(frame: &mut Frame, app: &App, area: Rect) {
                     let from_mins = from_h * 60 + from_m;
                     let to_mins = to_h * 60 + to_m;
 
-                    let is_past = to_mins < current_minutes;
-                    let is_current = from_mins <= current_minutes && current_minutes < to_mins;
+                    let is_today = app.effective_date == app.current_date;
+                    let is_past = is_today && to_mins < current_minutes;
+                    let is_current = is_today && from_mins <= current_minutes && current_minutes < to_mins;
 
                     let time = format!("{}-{}", hour.from_time, hour.to_time);
 
@@ -402,7 +403,19 @@ fn draw_overview_schedule(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let time_str = format!("{:02}:{:02}", current_time.0, current_time.1);
-    let title = format!(" {} ({}) [{}] ", T::today_schedule(lang), app.current_date, time_str);
+    let title = if app.effective_date == app.current_date {
+        format!(" {} ({}) [{}] ", T::today_schedule(lang), app.current_date, time_str)
+    } else {
+        let display_date = {
+            let parts: Vec<&str> = app.effective_date.split('-').collect();
+            if parts.len() == 3 {
+                format!("{}.{}.{}", parts[2], parts[1], parts[0])
+            } else {
+                app.effective_date.clone()
+            }
+        };
+        format!(" {} ({}) [{}] ", T::schedule(lang), display_date, time_str)
+    };
 
     let is_focused = app.focus == Focus::OverviewSchedule;
     let border_style = if is_focused {
@@ -552,13 +565,16 @@ fn draw_overview_grades(frame: &mut Frame, app: &App, area: Rect) {
             let visible_items = (area.height as usize / estimated_item_height).max(1);
             let scroll = calculate_scroll(app.grades_offset, visible_items, summary.len());
 
-            for (subject, grades) in summary.iter().skip(scroll) {
+            for (idx, (subject, grades)) in summary.iter().enumerate().skip(scroll) {
                 // Calculate average for these grades
                 let grade_strings: Vec<String> = grades.iter().map(|s| s.to_string()).collect();
                 let avg = calculate_average(&grade_strings);
 
+                let is_selected = idx == app.grades_offset;
+                let marker = if is_selected { "▸ " } else { "  " };
+
                 let mut spans = vec![
-                    Span::raw(format!("  {}: ", subject)),
+                    Span::raw(format!("{}{}: ", marker, subject)),
                 ];
 
                 // Average first (colored)
@@ -650,16 +666,18 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
             // Build combined list of items with divider
             #[derive(Clone)]
             enum HomeworkItem<'a> {
-                Future(&'a crate::models::Homework),
+                Future(&'a crate::models::Homework, usize),
                 Divider,
-                Past(&'a crate::models::Homework),
+                Past(&'a crate::models::Homework, usize),
             }
 
             let mut all_items: Vec<HomeworkItem> = Vec::new();
 
             // Future items first
+            let mut hw_idx = 0;
             for hw in &future {
-                all_items.push(HomeworkItem::Future(hw));
+                all_items.push(HomeworkItem::Future(hw, hw_idx));
+                hw_idx += 1;
             }
 
             // Add divider if we have both future and past items
@@ -669,7 +687,8 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
 
             // Past items
             for hw in &past {
-                all_items.push(HomeworkItem::Past(hw));
+                all_items.push(HomeworkItem::Past(hw, hw_idx));
+                hw_idx += 1;
             }
 
             // Calculate scroll position with center-biased scrolling
@@ -682,16 +701,32 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
 
             for item in all_items.into_iter().skip(scroll) {
                 match item {
-                    HomeworkItem::Future(hw) => {
+                    HomeworkItem::Future(hw, hw_idx) => {
+                        let is_selected = hw_idx == app.list_offset;
+                        let marker = if is_selected { "▸ " } else { "  " };
+                        let bg = if is_selected { Color::Rgb(40, 40, 50) } else { Color::Reset };
+
                         let due_str = hw.due_date
                             .as_ref()
                             .map(|d| format!(" -> Due: {}", d))
                             .unwrap_or_default();
 
+                        let header_style = if is_selected {
+                            Style::default().fg(Color::Yellow).bg(bg).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                        };
+
+                        let body_style = if is_selected {
+                            Style::default().fg(Color::Green).bg(bg)
+                        } else {
+                            Style::default().fg(Color::Green)
+                        };
+
                         let mut lines = vec![
                             Line::from(Span::styled(
-                                format!("  [{}] {}{}", hw.date, hw.subject, due_str),
-                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                                format!("{}[{}] {}{}", marker, hw.date, hw.subject, due_str),
+                                header_style,
                             )),
                         ];
 
@@ -699,7 +734,7 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
                         for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
                             lines.push(Line::from(Span::styled(
                                 wrapped_line,
-                                Style::default().fg(Color::Green),
+                                body_style,
                             )));
                         }
                         lines.push(Line::from(""));
@@ -713,16 +748,32 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
                             Style::default().fg(Color::DarkGray),
                         ))));
                     }
-                    HomeworkItem::Past(hw) => {
+                    HomeworkItem::Past(hw, hw_idx) => {
+                        let is_selected = hw_idx == app.list_offset;
+                        let marker = if is_selected { "▸ " } else { "  " };
+                        let bg = if is_selected { Color::Rgb(40, 40, 50) } else { Color::Reset };
+
                         let due_str = hw.due_date
                             .as_ref()
                             .map(|d| format!(" -> Due: {}", d))
                             .unwrap_or_default();
 
+                        let header_style = if is_selected {
+                            Style::default().fg(Color::Yellow).bg(bg).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                        };
+
+                        let body_style = if is_selected {
+                            Style::default().fg(Color::DarkGray).bg(bg)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        };
+
                         let mut lines = vec![
                             Line::from(Span::styled(
-                                format!("  [{}] {}{}", hw.date, hw.subject, due_str),
-                                Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                                format!("{}[{}] {}{}", marker, hw.date, hw.subject, due_str),
+                                header_style,
                             )),
                         ];
 
@@ -730,7 +781,7 @@ fn draw_homework(frame: &mut Frame, app: &App, area: Rect) {
                         for wrapped_line in wrap_text(&hw.text, text_width, "    ") {
                             lines.push(Line::from(Span::styled(
                                 wrapped_line,
-                                Style::default().fg(Color::DarkGray),
+                                body_style,
                             )));
                         }
                         lines.push(Line::from(""));
@@ -782,22 +833,33 @@ fn draw_grades(frame: &mut Frame, app: &App, area: Rect) {
 
             data.grades
                 .iter()
+                .enumerate()
                 .skip(scroll)
                 .take(area.height.saturating_sub(2) as usize / 5)
-                .map(|grade| {
+                .map(|(idx, grade)| {
+                    let is_selected = idx == app.list_offset;
+                    let marker = if is_selected { "▸ " } else { "  " };
+                    let bg = if is_selected { Color::Rgb(40, 40, 50) } else { Color::Reset };
+
+                    let subject_style = if is_selected {
+                        Style::default().fg(Color::Yellow).bg(bg).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().add_modifier(Modifier::BOLD)
+                    };
+
                     let mut lines = vec![
                         Line::from(Span::styled(
-                            format!("  {}", grade.subject),
-                            Style::default().add_modifier(Modifier::BOLD),
+                            format!("{}{}", marker, grade.subject),
+                            subject_style,
                         )),
                     ];
 
-                    // Term 1: Show average first, then grades
+                    // Term 1: Show average first, then grade values (no dates inline)
                     if !grade.term1_grades.is_empty() {
-                        let avg = calculate_average(&grade.term1_grades);
+                        let values: Vec<String> = grade.term1_grades.iter().map(|e| e.value.clone()).collect();
+                        let avg = calculate_average(&values);
                         let mut spans = vec![Span::raw(format!("    {}: ", T::term1(lang)))];
 
-                        // Average first (colored)
                         if let Some(a) = avg {
                             spans.push(Span::styled(
                                 format!("{:.2}", a),
@@ -806,28 +868,41 @@ fn draw_grades(frame: &mut Frame, app: &App, area: Rect) {
                             spans.push(Span::raw(" <- "));
                         }
 
-                        // Individual grades (colored)
-                        for (i, g) in grade.term1_grades.iter().enumerate() {
+                        for (i, entry) in grade.term1_grades.iter().enumerate() {
                             if i > 0 { spans.push(Span::raw(", ")); }
-                            spans.push(Span::styled(g.clone(), Style::default().fg(grade_color(g))));
+                            spans.push(Span::styled(entry.value.clone(), Style::default().fg(grade_color(&entry.value))));
                         }
 
                         lines.push(Line::from(spans));
+
+                        // Show each grade with date and optional comment below
+                        for entry in &grade.term1_grades {
+                            let date_str = entry.date.as_deref().unwrap_or("?");
+                            let detail = if let Some(ref desc) = entry.description {
+                                format!("      {} {} - {}", entry.value, date_str, desc)
+                            } else {
+                                format!("      {} {}", entry.value, date_str)
+                            };
+                            lines.push(Line::from(Span::styled(
+                                detail,
+                                Style::default().fg(Color::DarkGray),
+                            )));
+                        }
                     }
 
                     if let Some(ref final_grade) = grade.term1_final {
                         lines.push(Line::from(Span::styled(
-                            format!("    {} {}: {}", T::term1(lang), T::final_grade(lang), final_grade),
-                            Style::default().fg(grade_color(final_grade)).add_modifier(Modifier::BOLD),
+                            format!("    {} {}: {}", T::term1(lang), T::final_grade(lang), final_grade.value),
+                            Style::default().fg(grade_color(&final_grade.value)).add_modifier(Modifier::BOLD),
                         )));
                     }
 
-                    // Term 2: Show average first, then grades
+                    // Term 2: Show average first, then grade values (no dates inline)
                     if !grade.term2_grades.is_empty() {
-                        let avg = calculate_average(&grade.term2_grades);
+                        let values: Vec<String> = grade.term2_grades.iter().map(|e| e.value.clone()).collect();
+                        let avg = calculate_average(&values);
                         let mut spans = vec![Span::raw(format!("    {}: ", T::term2(lang)))];
 
-                        // Average first (colored)
                         if let Some(a) = avg {
                             spans.push(Span::styled(
                                 format!("{:.2}", a),
@@ -836,26 +911,39 @@ fn draw_grades(frame: &mut Frame, app: &App, area: Rect) {
                             spans.push(Span::raw(" <- "));
                         }
 
-                        // Individual grades (colored)
-                        for (i, g) in grade.term2_grades.iter().enumerate() {
+                        for (i, entry) in grade.term2_grades.iter().enumerate() {
                             if i > 0 { spans.push(Span::raw(", ")); }
-                            spans.push(Span::styled(g.clone(), Style::default().fg(grade_color(g))));
+                            spans.push(Span::styled(entry.value.clone(), Style::default().fg(grade_color(&entry.value))));
                         }
 
                         lines.push(Line::from(spans));
+
+                        // Show each grade with date and optional comment below
+                        for entry in &grade.term2_grades {
+                            let date_str = entry.date.as_deref().unwrap_or("?");
+                            let detail = if let Some(ref desc) = entry.description {
+                                format!("      {} {} - {}", entry.value, date_str, desc)
+                            } else {
+                                format!("      {} {}", entry.value, date_str)
+                            };
+                            lines.push(Line::from(Span::styled(
+                                detail,
+                                Style::default().fg(Color::DarkGray),
+                            )));
+                        }
                     }
 
                     if let Some(ref final_grade) = grade.term2_final {
                         lines.push(Line::from(Span::styled(
-                            format!("    {} {}: {}", T::term2(lang), T::final_grade(lang), final_grade),
-                            Style::default().fg(grade_color(final_grade)).add_modifier(Modifier::BOLD),
+                            format!("    {} {}: {}", T::term2(lang), T::final_grade(lang), final_grade.value),
+                            Style::default().fg(grade_color(&final_grade.value)).add_modifier(Modifier::BOLD),
                         )));
                     }
 
                     if let Some(ref annual) = grade.annual {
                         lines.push(Line::from(Span::styled(
-                            format!("    {}: {}", T::annual(lang), annual),
-                            Style::default().fg(grade_color(annual)).add_modifier(Modifier::BOLD),
+                            format!("    {}: {}", T::annual(lang), annual.value),
+                            Style::default().fg(grade_color(&annual.value)).add_modifier(Modifier::BOLD),
                         )));
                     }
 

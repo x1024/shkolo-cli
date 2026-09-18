@@ -32,6 +32,7 @@ enum BackgroundResult {
         students: Vec<StudentData>,
         notifications: Vec<Notification>,
         messages: Vec<MessageThread>,
+        effective_date: String,
     },
     /// Schedule-only refresh completed
     ScheduleRefresh {
@@ -611,12 +612,12 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
 
                 if let Some(Ok(bg_result)) = result {
                     match bg_result {
-                        BackgroundResult::DataRefresh { students, notifications, messages } => {
+                        BackgroundResult::DataRefresh { students, notifications, messages, effective_date } => {
                             app.students = students;
                             app.notifications = notifications;
                             app.messages = messages;
-                            // Data refresh always fetches today's schedule,
-                            // so reset schedule_date to keep label and data in sync
+                            app.effective_date = effective_date;
+                            // Reset schedule_date to effective date (today or next school day)
                             app.schedule_today();
                             app.set_status("Refreshed");
                         }
@@ -1289,14 +1290,28 @@ async fn cache_command(cache: &CacheStore, clear: bool, clear_all: bool, refresh
                 cache.save_homework(student.id, &homework)?;
             }
 
-            // Refresh grades
-            if let Ok(grades_response) = client.get_grades_summary(student.id).await {
-                let courses = grades_response.grades.or(grades_response.courses).unwrap_or_default();
-                let grades: Vec<_> = courses.iter()
-                    .map(Grade::from_course_grades)
-                    .filter(|g| g.has_grades())
-                    .collect();
-                cache.save_grades(student.id, &grades)?;
+            // Refresh grades (try detailed endpoint first)
+            let mut grades_saved = false;
+            if let Ok(response) = client.get_grades(student.id).await {
+                let raw = response.grades.unwrap_or_default();
+                if !raw.is_empty() {
+                    let grades: Vec<_> = Grade::from_grades_list(&raw)
+                        .into_iter()
+                        .filter(|g| g.has_grades())
+                        .collect();
+                    cache.save_grades(student.id, &grades)?;
+                    grades_saved = true;
+                }
+            }
+            if !grades_saved {
+                if let Ok(grades_response) = client.get_grades_summary(student.id).await {
+                    let courses = grades_response.grades.or(grades_response.courses).unwrap_or_default();
+                    let grades: Vec<_> = courses.iter()
+                        .map(Grade::from_course_grades)
+                        .filter(|g| g.has_grades())
+                        .collect();
+                    cache.save_grades(student.id, &grades)?;
+                }
             }
 
             // Refresh schedule
@@ -1369,7 +1384,7 @@ async fn get_students(
     students.sort_by(|a, b| a.name.cmp(&b.name));
     cache.save_students(&students)?;
 
-    Ok((students, false, None))
+    Ok((students, false, Some("just now".to_string())))
 }
 
 async fn get_homework(
@@ -1424,7 +1439,7 @@ async fn get_homework(
     all_homework.sort_by(|a, b| b.date_sort.cmp(&a.date_sort));
     cache.save_homework(student_id, &all_homework)?;
 
-    Ok((all_homework, false, None))
+    Ok((all_homework, false, Some("just now".to_string())))
 }
 
 async fn get_grades(
@@ -1442,9 +1457,23 @@ async fn get_grades(
         }
     }
 
-    // Fetch from API
-    let response = client.get_grades_summary(student_id).await?;
+    // Try detailed /grades endpoint first (has dates, comments, types)
+    if let Ok(response) = client.get_grades(student_id).await {
+        let raw = response.grades.unwrap_or_default();
+        if !raw.is_empty() {
+            let grades: Vec<Grade> = Grade::from_grades_list(&raw)
+                .into_iter()
+                .filter(|g| g.has_grades())
+                .collect();
+            if !grades.is_empty() {
+                cache.save_grades(student_id, &grades)?;
+                return Ok((grades, false, Some("just now".to_string())));
+            }
+        }
+    }
 
+    // Fallback to summary endpoint (no dates/comments)
+    let response = client.get_grades_summary(student_id).await?;
     let courses = response.grades.or(response.courses).unwrap_or_default();
     let grades: Vec<Grade> = courses
         .iter()
@@ -1454,7 +1483,7 @@ async fn get_grades(
 
     cache.save_grades(student_id, &grades)?;
 
-    Ok((grades, false, None))
+    Ok((grades, false, Some("just now".to_string())))
 }
 
 async fn get_schedule(
@@ -1482,7 +1511,7 @@ async fn get_schedule(
 
     cache.save_schedule(student_id, date, &schedule)?;
 
-    Ok((schedule, false, None))
+    Ok((schedule, false, Some("just now".to_string())))
 }
 
 async fn get_absences(
@@ -1517,7 +1546,7 @@ async fn get_absences(
 
     cache.save_absences(student_id, &absences)?;
 
-    Ok((absences, false, None))
+    Ok((absences, false, Some("just now".to_string())))
 }
 
 async fn get_feedbacks(
@@ -1550,7 +1579,7 @@ async fn get_feedbacks(
 
     cache.save_feedbacks(student_id, &feedbacks)?;
 
-    Ok((feedbacks, false, None))
+    Ok((feedbacks, false, Some("just now".to_string())))
 }
 
 async fn get_notifications(
@@ -1579,7 +1608,7 @@ async fn get_notifications(
 
     cache.save_notifications(&notifications)?;
 
-    Ok((notifications, false, None))
+    Ok((notifications, false, Some("just now".to_string())))
 }
 
 fn select_students<'a>(students: &'a [Student], selector: Option<&str>) -> Vec<&'a Student> {
@@ -1674,6 +1703,26 @@ async fn refresh_data_background(
         });
     }
 
+    // Compute effective date (check if school day is over or weekend)
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let schedules: Vec<&[ScheduleHour]> = student_data_list.iter().map(|s| s.schedule.as_slice()).collect();
+    let effective_date = tui::app::compute_effective_date(
+        &today,
+        now.hour(),
+        now.minute(),
+        &schedules,
+    );
+
+    // If effective date differs from today, fetch next school day's schedule for all students
+    if effective_date != today {
+        for data in &mut student_data_list {
+            if let Ok((schedule, _, schedule_age)) = get_schedule(client, cache, data.student.id, &effective_date, force_refresh).await {
+                data.schedule = schedule;
+                data.schedule_age = schedule_age;
+            }
+        }
+    }
+
     // Fetch notifications
     let (notifications, _, _) = get_notifications(client, cache, force_refresh).await?;
 
@@ -1687,6 +1736,7 @@ async fn refresh_data_background(
         students: student_data_list,
         notifications,
         messages,
+        effective_date,
     })
 }
 

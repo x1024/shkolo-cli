@@ -34,6 +34,56 @@ pub fn calculate_scroll(selected: usize, visible_height: usize, total_items: usi
     ideal_center.min(max_scroll)
 }
 
+/// Calculate the next school day (skip weekends).
+/// Returns the next weekday after `date`.
+pub fn next_school_day(date: &str) -> Option<String> {
+    let fmt = time::macros::format_description!("[year]-[month]-[day]");
+    let parsed = time::Date::parse(date, fmt).ok()?;
+    let mut next = parsed + time::Duration::days(1);
+    while matches!(next.weekday(), time::Weekday::Saturday | time::Weekday::Sunday) {
+        next += time::Duration::days(1);
+    }
+    Some(format!("{:04}-{:02}-{:02}", next.year(), next.month() as u8, next.day()))
+}
+
+/// Compute the effective schedule date: today if school is in session,
+/// next school day if the school day is over or it's a weekend.
+pub fn compute_effective_date(today: &str, current_hour: u8, current_minute: u8, schedules: &[&[ScheduleHour]]) -> String {
+    // Check if today is a weekend
+    let fmt = time::macros::format_description!("[year]-[month]-[day]");
+    if let Ok(date) = time::Date::parse(today, fmt) {
+        if matches!(date.weekday(), time::Weekday::Saturday | time::Weekday::Sunday) {
+            return next_school_day(today).unwrap_or_else(|| today.to_string());
+        }
+    }
+
+    // Check if all students' school days have ended
+    let current_minutes = current_hour as i32 * 60 + current_minute as i32;
+    let has_any_classes = schedules.iter().any(|s| !s.is_empty());
+
+    if has_any_classes {
+        // Find the latest class end time across all students
+        let latest_end = schedules.iter()
+            .flat_map(|s| s.iter())
+            .filter_map(|h| {
+                let parts: Vec<&str> = h.to_time.split(':').collect();
+                if parts.len() >= 2 {
+                    Some(parts[0].parse::<i32>().unwrap_or(0) * 60 + parts[1].parse::<i32>().unwrap_or(0))
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0);
+
+        if current_minutes > latest_end {
+            return next_school_day(today).unwrap_or_else(|| today.to_string());
+        }
+    }
+
+    today.to_string()
+}
+
 /// Auto-refresh interval options (in minutes)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AutoRefreshInterval {
@@ -233,7 +283,7 @@ impl StudentData {
             .sum()
     }
 
-    /// Get all grades for all subjects
+    /// Get all grades for all subjects (values only, for overview)
     pub fn all_grades_summary(&self) -> Vec<(&str, Vec<&str>)> {
         self.grades.iter()
             .filter(|g| !g.term1_grades.is_empty() || !g.term2_grades.is_empty())
@@ -241,7 +291,7 @@ impl StudentData {
                 // Combine term2 and term1 grades (term2 first as it's more recent)
                 let all: Vec<&str> = g.term2_grades.iter()
                     .chain(g.term1_grades.iter())
-                    .map(|s| s.as_str())
+                    .map(|e| e.value.as_str())
                     .collect();
                 (g.subject.as_str(), all)
             })
@@ -272,6 +322,7 @@ pub struct App {
     pub last_refresh: Option<String>,
     pub current_date: String,
     pub schedule_date: String, // Date being viewed in schedule (can differ from current_date)
+    pub effective_date: String, // Today or next school day if school is over
     pub current_time: (u8, u8), // (hour, minute)
     pub tick: usize, // Frame counter for animations
     pub students_pane_width: u16, // Resizable pane width
@@ -331,7 +382,8 @@ impl App {
             loading: false,
             last_refresh: None,
             current_date: today.clone(),
-            schedule_date: today,
+            schedule_date: today.clone(),
+            effective_date: today,
             current_time: (now.hour(), now.minute()),
             tick: 0,
             students_pane_width: 30,
@@ -391,14 +443,30 @@ impl App {
         }
     }
 
-    /// Reset schedule to today
+    /// Reset schedule to today (or effective date if school day is over)
     pub fn schedule_today(&mut self) {
-        self.schedule_date = self.current_date.clone();
+        self.schedule_date = self.effective_date.clone();
     }
 
     /// Check if schedule is showing today
     pub fn is_schedule_today(&self) -> bool {
         self.schedule_date == self.current_date
+    }
+
+    /// Check if schedule is showing the effective date (today or next school day)
+    pub fn is_schedule_effective(&self) -> bool {
+        self.schedule_date == self.effective_date
+    }
+
+    /// Update effective_date based on current schedule data and time
+    pub fn update_effective_date(&mut self) {
+        let schedules: Vec<&[ScheduleHour]> = self.students.iter().map(|s| s.schedule.as_slice()).collect();
+        self.effective_date = compute_effective_date(
+            &self.current_date,
+            self.current_time.0,
+            self.current_time.1,
+            &schedules,
+        );
     }
 
     /// Check if the students pane should be shown
@@ -919,6 +987,7 @@ impl App {
         if !self.students.is_empty() {
             self.selected_student = (self.selected_student + 1) % self.students.len();
             self.list_offset = 0;
+            self.schedule_date = self.effective_date.clone();
         }
     }
 
@@ -930,6 +999,7 @@ impl App {
                 self.selected_student - 1
             };
             self.list_offset = 0;
+            self.schedule_date = self.effective_date.clone();
         }
     }
 
@@ -1204,9 +1274,7 @@ impl App {
                 };
 
                 if let Some(tab) = target_tab {
-                    self.current_tab = tab;
-                    self.list_offset = 0;
-                    self.focus = Focus::Content;
+                    self.set_tab(tab);
                     return true;
                 }
             }
@@ -1290,6 +1358,18 @@ impl App {
             self.messages = messages;
             self.messages_age = Some(age);
         }
+
+        // Compute effective date and try loading that schedule from cache
+        self.update_effective_date();
+        if self.effective_date != self.current_date {
+            for data in &mut self.students {
+                if let Some((schedule, age, _)) = cache.get_schedule(data.student.id, &self.effective_date) {
+                    data.schedule = schedule;
+                    data.schedule_age = Some(age);
+                }
+            }
+        }
+        self.schedule_date = self.effective_date.clone();
     }
 
     pub async fn refresh_data(&mut self, client: &ShkoloClient, cache: &CacheStore, force: bool) -> anyhow::Result<()> {
@@ -1442,6 +1522,32 @@ impl App {
             self.messages_age = Some(age);
         }
 
+        // Compute effective date (today or next school day if school is over)
+        self.update_effective_date();
+
+        // If effective date differs from today, re-fetch schedules for the effective date
+        if self.effective_date != self.current_date {
+            let effective = self.effective_date.clone();
+            for i in 0..self.students.len() {
+                let student_id = self.students[i].student.id;
+                let should_refresh = force || cache.get_schedule(student_id, &effective)
+                    .map(|(_, _, expired)| expired)
+                    .unwrap_or(true);
+
+                if should_refresh {
+                    if let Ok(schedule) = self.fetch_schedule(client, student_id, &effective).await {
+                        self.students[i].schedule = schedule.clone();
+                        self.students[i].schedule_age = Some("just now".to_string());
+                        let _ = cache.save_schedule(student_id, &effective, &schedule);
+                    }
+                } else if let Some((schedule, age, _)) = cache.get_schedule(student_id, &effective) {
+                    self.students[i].schedule = schedule;
+                    self.students[i].schedule_age = Some(age);
+                }
+            }
+        }
+        self.schedule_date = self.effective_date.clone();
+
         self.last_refresh = Some({
             let now = OffsetDateTime::now_utc();
             format!("{:02}:{:02}", now.hour(), now.minute())
@@ -1495,8 +1601,22 @@ impl App {
     }
 
     async fn fetch_grades(&self, client: &ShkoloClient, student_id: i64) -> anyhow::Result<Vec<Grade>> {
-        let response = client.get_grades_summary(student_id).await?;
+        // Try the detailed /grades endpoint first (has dates, comments, types)
+        if let Ok(response) = client.get_grades(student_id).await {
+            let raw = response.grades.unwrap_or_default();
+            if !raw.is_empty() {
+                let grades: Vec<Grade> = Grade::from_grades_list(&raw)
+                    .into_iter()
+                    .filter(|g| g.has_grades())
+                    .collect();
+                if !grades.is_empty() {
+                    return Ok(grades);
+                }
+            }
+        }
 
+        // Fallback to summary endpoint (no dates/comments)
+        let response = client.get_grades_summary(student_id).await?;
         let courses = response.grades.or(response.courses).unwrap_or_default();
         let grades: Vec<Grade> = courses
             .iter()
@@ -2357,5 +2477,115 @@ mod tests {
         assert_eq!(app.current_tab, Tab::Homework);
         app.go_back();
         assert_eq!(app.current_tab, Tab::Overview);
+    }
+
+    #[test]
+    fn test_student_switch_resets_schedule_date() {
+        let mut app = App::new();
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+            StudentData::new(Student { id: 2, name: "Bob".into(), class_name: None, school_name: None }),
+        ];
+
+        // Navigate schedule to a different day
+        app.schedule_date = "2026-04-15".to_string();
+        assert_ne!(app.schedule_date, app.effective_date);
+
+        // Switch student -> schedule_date should reset to effective_date
+        app.next_student();
+        assert_eq!(app.schedule_date, app.effective_date);
+
+        // Navigate again, switch back
+        app.schedule_date = "2026-04-15".to_string();
+        app.prev_student();
+        assert_eq!(app.schedule_date, app.effective_date);
+    }
+
+    #[test]
+    fn test_schedule_today_uses_effective_date() {
+        let mut app = App::new();
+
+        // Set effective_date to something different from current_date
+        app.effective_date = "2026-03-12".to_string();
+        app.schedule_date = "2026-05-01".to_string();
+
+        // 't' key resets to effective_date, not current_date
+        app.schedule_today();
+        assert_eq!(app.schedule_date, "2026-03-12");
+    }
+
+    #[test]
+    fn test_next_school_day() {
+        // Monday -> Tuesday
+        assert_eq!(next_school_day("2026-03-09").unwrap(), "2026-03-10");
+        // Thursday -> Friday
+        assert_eq!(next_school_day("2026-03-12").unwrap(), "2026-03-13");
+        // Friday -> Monday (skips weekend)
+        assert_eq!(next_school_day("2026-03-13").unwrap(), "2026-03-16");
+        // Saturday -> Monday
+        assert_eq!(next_school_day("2026-03-14").unwrap(), "2026-03-16");
+        // Sunday -> Monday
+        assert_eq!(next_school_day("2026-03-15").unwrap(), "2026-03-16");
+    }
+
+    #[test]
+    fn test_compute_effective_date_weekend() {
+        // Saturday -> next Monday
+        let result = compute_effective_date("2026-03-14", 10, 0, &[]);
+        assert_eq!(result, "2026-03-16");
+
+        // Sunday -> next Monday
+        let result = compute_effective_date("2026-03-15", 10, 0, &[]);
+        assert_eq!(result, "2026-03-16");
+    }
+
+    #[test]
+    fn test_compute_effective_date_school_over() {
+        let schedule = vec![
+            ScheduleHour {
+                hour_number: 1,
+                from_time: "08:00".into(),
+                to_time: "08:40".into(),
+                subject: "Math".into(),
+                teacher: None,
+                topic: None,
+                homework: None,
+                room: None,
+            },
+            ScheduleHour {
+                hour_number: 2,
+                from_time: "08:50".into(),
+                to_time: "09:30".into(),
+                subject: "Science".into(),
+                teacher: None,
+                topic: None,
+                homework: None,
+                room: None,
+            },
+        ];
+
+        // Wednesday 2026-03-11, during school (09:00) -> stay on today
+        let result = compute_effective_date("2026-03-11", 9, 0, &[&schedule]);
+        assert_eq!(result, "2026-03-11");
+
+        // Wednesday 2026-03-11, after school (10:00) -> next day (Thursday)
+        let result = compute_effective_date("2026-03-11", 10, 0, &[&schedule]);
+        assert_eq!(result, "2026-03-12");
+
+        // Friday 2026-03-13, after school -> Monday
+        let result = compute_effective_date("2026-03-13", 10, 0, &[&schedule]);
+        assert_eq!(result, "2026-03-16");
+    }
+
+    #[test]
+    fn test_compute_effective_date_no_classes() {
+        // Weekday with no classes -> stay on today (don't advance)
+        let result = compute_effective_date("2026-03-11", 15, 0, &[]);
+        assert_eq!(result, "2026-03-11");
+
+        // Empty schedule slices also stay on today
+        let empty: Vec<ScheduleHour> = vec![];
+        let result = compute_effective_date("2026-03-11", 15, 0, &[&empty]);
+        assert_eq!(result, "2026-03-11");
     }
 }
