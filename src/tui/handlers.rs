@@ -18,8 +18,8 @@ pub enum Action {
     // Navigation history
     NavigateBack,          // Go back in history (may need to reload data)
     NavigateForward,       // Go forward in history (may need to reload data)
-    // School year
-    SchoolYearChanged(i64), // School year ID changed
+    // Schools
+    SwitchSchool { user_id: i64, school_year: i64 }, // Switch to another school context
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
@@ -112,12 +112,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Down | KeyCode::Char('j') => {
             match app.focus {
                 Focus::Students => app.next_student(),
-                Focus::SchoolYears => {
-                    app.next_school_year();
-                    if let Some(year) = app.current_school_year() {
-                        return Action::SchoolYearChanged(year.id);
-                    }
-                }
+                Focus::Schools => app.next_school(),
                 _ => app.scroll_down(),
             }
             Action::None
@@ -125,13 +120,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Up | KeyCode::Char('k') => {
             match app.focus {
                 Focus::Students => app.prev_student(),
-                Focus::SchoolYears => {
-                    app.prev_school_year();
-                    if let Some(year) = app.current_school_year() {
-                        return Action::SchoolYearChanged(year.id);
-                    }
-                }
+                Focus::Schools => app.prev_school(),
                 _ => app.scroll_up(),
+            }
+            Action::None
+        }
+
+        // 'y' toggles listing of previous years in the Schools pane
+        KeyCode::Char('y') => {
+            if !app.school_contexts.is_empty() {
+                app.toggle_all_years();
             }
             Action::None
         }
@@ -189,8 +187,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 
         // Enter to activate/select
         KeyCode::Enter => {
+            // In the Schools pane, switch to the highlighted school
+            if app.focus == Focus::Schools {
+                if let Some(school) = app.selected_school() {
+                    if Some(school.key()) != app.active_context {
+                        return Action::SwitchSchool { user_id: school.user_id, school_year: school.school_year };
+                    }
+                }
+            }
             // On Notifications tab, navigate to related tab
-            if app.current_tab == Tab::Notifications {
+            else if app.current_tab == Tab::Notifications {
                 app.activate_notification();
             }
             // On Messages tab, open the selected thread
@@ -500,6 +506,10 @@ pub fn get_keybindings(app: &App) -> Vec<(&'static str, &'static str)> {
     bindings.push(("-/+/=", T::key_resize_pane(lang)));
     bindings.push(("⌫", T::key_go_back(lang)));
     bindings.push(("⇧⌫", T::key_go_forward(lang)));
+    if app.has_schools_pane() {
+        bindings.push(("Enter", T::key_switch_school(lang)));
+        bindings.push(("y", T::key_toggle_years(lang)));
+    }
 
     // Tab-specific bindings
     match app.current_tab {

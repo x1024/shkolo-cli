@@ -71,6 +71,10 @@ impl ShkoloClient {
         self.school_year = Some(year_id);
     }
 
+    pub fn set_token(&mut self, token: String) {
+        self.token = Some(token);
+    }
+
     pub fn auth_mode(&self) -> AuthMode {
         self.auth_mode
     }
@@ -240,6 +244,67 @@ impl ShkoloClient {
     /// Get users and years
     pub async fn get_users_and_years(&self) -> Result<UsersAndYearsResponse> {
         self.get("/v1/auth/usersAndYears").await
+    }
+
+    /// Switch the active parent user (i.e. school) and school year on the server.
+    ///
+    /// The selection is server-side state tied to the token: afterwards
+    /// `/v1/diary/pupils` returns that school's pupils and usersAndYears marks the
+    /// user+year as selected. Verified against the switch response and usersAndYears,
+    /// or as a last resort by the pupils' school matching `expected_school`.
+    /// On success the client's token (if a new one is issued) and School-Year
+    /// header are updated. On failure the caller should restore the previous token/year.
+    pub async fn switch_user_and_year(
+        &mut self,
+        user_id: i64,
+        school_year: i64,
+        expected_school: Option<&str>,
+    ) -> Result<UsersAndYearsResponse> {
+        // Body shape verified against the live API: `user_id` is required and the
+        // year key is `year` (school_year / year_id / schoolYear are ignored).
+        let body = serde_json::json!({
+            "user_id": user_id,
+            "year": school_year,
+        });
+
+        let response: serde_json::Value = self.post("/v1/auth/switchUserAndYear", &body, true).await?;
+        // The response echoes the bearer token as `apiToken`; adopt it in case it ever rotates
+        if let Some(token) = response.get("apiToken").or_else(|| response.get("token")).and_then(|v| v.as_str()) {
+            if !token.is_empty() {
+                self.token = Some(token.to_string());
+            }
+        }
+        self.school_year = Some(school_year);
+
+        let response_ok = response.get("user").and_then(|u| u.get("id")).and_then(|v| v.as_i64()) == Some(user_id)
+            && response.get("selectedYear").and_then(|v| v.as_i64()) == Some(school_year);
+
+        let users = self.get_users_and_years().await?;
+        let selected_ok = response_ok || users.users.iter().flatten().any(|e| {
+            e.id == Some(user_id) && e.school_year == Some(school_year) && e.is_selected == Some(true)
+        });
+
+        let pupils_ok = if selected_ok {
+            true
+        } else {
+            match (expected_school, self.get_pupils().await) {
+                (Some(school), Ok(pupils)) => pupils
+                    .child_pupils
+                    .iter()
+                    .flat_map(|m| m.values())
+                    .any(|p| p.school_name.as_deref() == Some(school)),
+                _ => false,
+            }
+        };
+
+        if !selected_ok && !pupils_ok {
+            return Err(anyhow!(
+                "Server did not confirm switch to user {} / school year {}",
+                user_id, school_year
+            ));
+        }
+
+        Ok(users)
     }
 
 

@@ -27,10 +27,72 @@ pub struct PupilsResponse {
     pub pupils: Option<Vec<ChildPupil>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SchoolYear {
-    pub id: i64,
-    pub name: Option<String>,
+/// A selectable school context: one parent "user" identity in one school for one
+/// school year. Parents with children in several schools get one context per school.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SchoolContext {
+    pub user_id: i64,
+    pub school_year: i64,
+    pub school_name: String,
+    pub user_name: Option<String>,
+    /// Marked as the currently selected user+year by the server
+    pub is_selected: bool,
+}
+
+impl SchoolContext {
+    /// Build contexts from usersAndYears entries: newest year first, then by school name.
+    pub fn from_entries(entries: &[UserYearEntry]) -> Vec<SchoolContext> {
+        let mut contexts: Vec<SchoolContext> = entries
+            .iter()
+            .filter_map(|e| {
+                let user_id = e.id?;
+                let school_year = e.school_year?;
+                Some(SchoolContext {
+                    user_id,
+                    school_year,
+                    school_name: e.school_name.clone().unwrap_or_else(|| format!("#{}", user_id)),
+                    user_name: e.user_name.clone(),
+                    is_selected: e.is_selected == Some(true),
+                })
+            })
+            .collect();
+
+        // Stable ordering: newest year first, then school name, then user id
+        contexts.sort_by(|a, b| {
+            b.school_year.cmp(&a.school_year)
+                .then_with(|| a.school_name.cmp(&b.school_name))
+                .then_with(|| a.user_id.cmp(&b.user_id))
+        });
+        contexts.dedup_by(|a, b| a.user_id == b.user_id && a.school_year == b.school_year);
+        contexts
+    }
+
+    /// The latest school year among the contexts (the "current" year)
+    pub fn current_year(contexts: &[SchoolContext]) -> Option<i64> {
+        contexts.iter().map(|c| c.school_year).max()
+    }
+
+    pub fn is_current(&self, current_year: Option<i64>) -> bool {
+        Some(self.school_year) == current_year
+    }
+
+    pub fn key(&self) -> (i64, i64) {
+        (self.user_id, self.school_year)
+    }
+
+    /// Cache namespace for a context, e.g. "3562478_2025"
+    pub fn cache_key_for(user_id: i64, school_year: i64) -> String {
+        format!("{}_{}", user_id, school_year)
+    }
+
+    /// School year id 2025 means the 2025/26 school year
+    pub fn year_label(&self) -> String {
+        Self::year_label_for(self.school_year)
+    }
+
+    pub fn year_label_for(school_year: i64) -> String {
+        format!("{}/{:02}", school_year, (school_year + 1) % 100)
+    }
 }
 
 /// Each entry from /v1/auth/usersAndYears is a user+year combination
@@ -66,5 +128,65 @@ impl Student {
             class_name: pupil.class_year_name.clone(),
             school_name: pupil.school_name.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: i64, year: i64, school: &str, selected: bool) -> UserYearEntry {
+        UserYearEntry {
+            id: Some(id),
+            user_name: Some("Parent".into()),
+            school_year: Some(year),
+            school_name: Some(school.into()),
+            is_selected: Some(selected),
+            roles: None,
+            roles_ids: None,
+            region_id: None,
+            notification_count: None,
+        }
+    }
+
+    #[test]
+    fn test_from_entries_sorts_and_dedups() {
+        let entries = vec![
+            entry(3000892, 2024, "СУ \"Димчо Дебелянов\"", false),
+            entry(3562478, 2025, "ОУ \"Петко Р. Славейков\"", true),
+            entry(3562478, 2025, "ОУ \"Петко Р. Славейков\"", true), // duplicate
+            entry(4000001, 2025, "Б школо", false),
+            entry(3562478, 2023, "ОУ \"Петко Р. Славейков\"", false),
+        ];
+        let contexts = SchoolContext::from_entries(&entries);
+
+        assert_eq!(contexts.len(), 4);
+        // Newest year first, then by school name
+        assert_eq!(contexts[0].key(), (4000001, 2025));
+        assert_eq!(contexts[1].key(), (3562478, 2025));
+        assert!(contexts[1].is_selected);
+        assert_eq!(contexts[2].key(), (3000892, 2024));
+        assert_eq!(contexts[3].key(), (3562478, 2023));
+
+        assert_eq!(SchoolContext::current_year(&contexts), Some(2025));
+        assert!(contexts[0].is_current(Some(2025)));
+        assert!(!contexts[2].is_current(Some(2025)));
+    }
+
+    #[test]
+    fn test_from_entries_skips_incomplete() {
+        let mut broken = entry(1, 2025, "X", false);
+        broken.id = None;
+        let contexts = SchoolContext::from_entries(&[broken, entry(2, 2025, "Y", false)]);
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].user_id, 2);
+    }
+
+    #[test]
+    fn test_labels_and_keys() {
+        let ctx = &SchoolContext::from_entries(&[entry(3562478, 2025, "S", false)])[0];
+        assert_eq!(ctx.year_label(), "2025/26");
+        assert_eq!(SchoolContext::year_label_for(2099), "2099/00");
+        assert_eq!(SchoolContext::cache_key_for(3562478, 2025), "3562478_2025");
     }
 }

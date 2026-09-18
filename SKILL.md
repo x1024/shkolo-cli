@@ -82,6 +82,12 @@ shkolo json messages
 
 # Get complete summary
 shkolo json summary
+
+# List schools (one parent "user" per school) for the current school year
+shkolo json schools [--all-years]
+
+# Switch the active school; students/homework/etc. then come from that school
+shkolo json switch-school --user-id <id> [--year <school_year_id>]
 ```
 
 ### Interactive TUI
@@ -96,7 +102,9 @@ shkolo tui
 |-----|--------|
 | `←` `→` `h` `l` | Switch tabs |
 | `↑` `↓` `j` `k` | Navigate lists |
-| `Tab` | Toggle focus (students/content) |
+| `Tab` | Toggle focus (students/schools/content) |
+| `Enter` | In the Schools pane: switch to the highlighted school |
+| `y` | Show/hide schools from previous school years |
 | `1-5` | Quick select student |
 | `Enter` | Open/activate item |
 | `r` | Refresh data |

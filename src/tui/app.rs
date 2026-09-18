@@ -222,7 +222,7 @@ impl Tab {
 pub enum Focus {
     Students,
     Content,
-    SchoolYears,
+    Schools,
     // Overview tab sub-panes
     OverviewSchedule,
     OverviewHomework,
@@ -351,9 +351,11 @@ pub struct App {
     // Navigation history (for back/forward)
     nav_history: Vec<Location>,
     nav_index: usize,  // Current position in history
-    // School year selection
-    pub school_years: Vec<SchoolYear>,
-    pub selected_school_year: usize,
+    // School selection: one context per (parent user, school year)
+    pub school_contexts: Vec<SchoolContext>,
+    pub active_context: Option<(i64, i64)>, // (user_id, school_year) currently in use
+    pub selected_context: usize,            // cursor within visible_contexts()
+    pub show_all_years: bool,               // also list contexts from previous years
 }
 
 impl App {
@@ -416,9 +418,11 @@ impl App {
                 selected_thread_id: None,
             }],
             nav_index: 0,
-            // School years
-            school_years: Vec::new(),
-            selected_school_year: 0,
+            // Schools
+            school_contexts: Vec::new(),
+            active_context: None,
+            selected_context: 0,
+            show_all_years: false,
         }
     }
 
@@ -477,34 +481,95 @@ impl App {
             return false;
         }
         // Only show if there's more than one student
-        self.students.len() > 1
+        // With several schools, always show the pane so the child's name and school are visible
+        self.students.len() > 1 || (self.has_schools_pane() && !self.students.is_empty())
     }
 
-    /// Check if the school years pane should be shown
-    pub fn has_school_years_pane(&self) -> bool {
-        self.school_years.len() > 1
+    // School contexts
+
+    /// Replace the known school contexts. Keeps the active context if already set,
+    /// otherwise takes the one the server marks as selected.
+    pub fn set_school_contexts(&mut self, contexts: Vec<SchoolContext>) {
+        self.school_contexts = contexts;
+        if self.active_context.is_none() {
+            self.active_context = self.school_contexts.iter().find(|c| c.is_selected).map(|c| c.key());
+        }
+        self.sync_context_cursor();
     }
 
-    /// Get the currently selected school year
-    pub fn current_school_year(&self) -> Option<&SchoolYear> {
-        self.school_years.get(self.selected_school_year)
+    /// Mark a context as the one in use and move the cursor onto it
+    pub fn set_active_context(&mut self, user_id: i64, school_year: i64) {
+        self.active_context = Some((user_id, school_year));
+        for c in &mut self.school_contexts {
+            c.is_selected = c.user_id == user_id && c.school_year == school_year;
+        }
+        self.sync_context_cursor();
     }
 
-    /// Select next school year
-    pub fn next_school_year(&mut self) {
-        if !self.school_years.is_empty() {
-            self.selected_school_year = (self.selected_school_year + 1) % self.school_years.len();
+    /// The latest school year known (the "current" one)
+    pub fn current_school_year(&self) -> Option<i64> {
+        SchoolContext::current_year(&self.school_contexts)
+    }
+
+    /// Contexts listed in the Schools pane: current-year ones plus the active one,
+    /// or everything when show_all_years is on.
+    pub fn visible_contexts(&self) -> Vec<&SchoolContext> {
+        let current = self.current_school_year();
+        self.school_contexts
+            .iter()
+            .filter(|c| self.show_all_years || c.is_current(current) || Some(c.key()) == self.active_context)
+            .collect()
+    }
+
+    /// Check if the schools pane should be shown
+    pub fn has_schools_pane(&self) -> bool {
+        self.school_contexts.len() > 1
+    }
+
+    /// Height of the schools pane including borders
+    pub fn schools_pane_height(&self) -> u16 {
+        (self.visible_contexts().len() as u16 + 2).min(10)
+    }
+
+    /// The context under the cursor in the Schools pane
+    pub fn selected_school(&self) -> Option<SchoolContext> {
+        self.visible_contexts().get(self.selected_context).map(|c| (*c).clone())
+    }
+
+    /// Move the schools cursor down
+    pub fn next_school(&mut self) {
+        let len = self.visible_contexts().len();
+        if len > 0 {
+            self.selected_context = (self.selected_context + 1) % len;
         }
     }
 
-    /// Select previous school year
-    pub fn prev_school_year(&mut self) {
-        if !self.school_years.is_empty() {
-            self.selected_school_year = if self.selected_school_year == 0 {
-                self.school_years.len() - 1
-            } else {
-                self.selected_school_year - 1
-            };
+    /// Move the schools cursor up
+    pub fn prev_school(&mut self) {
+        let len = self.visible_contexts().len();
+        if len > 0 {
+            self.selected_context = if self.selected_context == 0 { len - 1 } else { self.selected_context - 1 };
+        }
+    }
+
+    /// Toggle listing of previous years' contexts
+    pub fn toggle_all_years(&mut self) {
+        self.show_all_years = !self.show_all_years;
+        self.sync_context_cursor();
+    }
+
+    /// Put the cursor on the active context if visible, otherwise clamp it
+    pub fn sync_context_cursor(&mut self) {
+        let (pos, len) = {
+            let visible = self.visible_contexts();
+            (
+                visible.iter().position(|c| Some(c.key()) == self.active_context),
+                visible.len(),
+            )
+        };
+        match pos {
+            Some(p) => self.selected_context = p,
+            None => self.selected_context = self.selected_context.min(len.saturating_sub(1)),
         }
     }
 
@@ -523,7 +588,7 @@ impl App {
         if matches!(self.current_tab, Tab::Notifications | Tab::Settings | Tab::Messages) {
             return false;
         }
-        self.has_school_years_pane()
+        self.has_schools_pane()
     }
 
     // Navigation history methods
@@ -837,28 +902,22 @@ impl App {
 
         // Check if click is in sidebar (left side)
         if column < students_width {
-            // If we have both students and school years, determine which pane was clicked
+            // If we have both students and schools, determine which pane was clicked
             let show_students = self.has_students_pane();
-            let show_years = self.has_school_years_pane();
+            let show_schools = self.has_schools_pane();
 
-            if show_students && show_years {
-                // School years pane is at the bottom of the sidebar
-                let years_height = (self.school_years.len() as u16 + 2).min(10);
+            if show_students && show_schools {
+                // Schools pane is at the bottom of the sidebar
+                let schools_height = self.schools_pane_height();
                 let sidebar_height = content_height;
-                let students_height = sidebar_height.saturating_sub(years_height);
+                let students_height = sidebar_height.saturating_sub(schools_height);
                 let click_row_in_sidebar = row.saturating_sub(header_offset);
 
                 if click_row_in_sidebar >= students_height {
-                    // Click is in school years pane
-                    self.focus = Focus::SchoolYears;
-                    let year_row = (click_row_in_sidebar - students_height).saturating_sub(1) as usize; // -1 for border
-                    if year_row < self.school_years.len() {
-                        self.selected_school_year = year_row;
-                        if let Some(year) = self.current_school_year() {
-                            return ClickResult::SchoolYearChanged(year.id);
-                        }
-                    }
-                    return ClickResult::None;
+                    // Click is in schools pane
+                    self.focus = Focus::Schools;
+                    let school_row = (click_row_in_sidebar - students_height).saturating_sub(1) as usize; // -1 for border
+                    return self.click_school_row(school_row);
                 }
             }
 
@@ -869,14 +928,9 @@ impl App {
                     self.list_offset = 0;
                     return ClickResult::StudentSelected;
                 }
-            } else if show_years {
-                self.focus = Focus::SchoolYears;
-                if relative_row < self.school_years.len() {
-                    self.selected_school_year = relative_row;
-                    if let Some(year) = self.current_school_year() {
-                        return ClickResult::SchoolYearChanged(year.id);
-                    }
-                }
+            } else if show_schools {
+                self.focus = Focus::Schools;
+                return self.click_school_row(relative_row);
             }
             return ClickResult::None;
         }
@@ -927,9 +981,29 @@ impl App {
         ClickResult::None
     }
 
+    /// Handle a click on a row of the Schools pane: move the cursor and, if the
+    /// clicked context is not the active one, request a switch to it.
+    fn click_school_row(&mut self, row: usize) -> ClickResult {
+        let target = {
+            let visible = self.visible_contexts();
+            visible.get(row).map(|c| c.key())
+        };
+        match target {
+            Some(key) => {
+                self.selected_context = row;
+                if Some(key) != self.active_context {
+                    ClickResult::SwitchSchool(key.0, key.1)
+                } else {
+                    ClickResult::None
+                }
+            }
+            None => ClickResult::None,
+        }
+    }
+
     pub fn toggle_focus(&mut self) {
         let has_students = self.has_students_pane();
-        let has_years = self.has_school_years_pane();
+        let has_years = self.has_schools_pane();
 
         self.focus = match self.current_tab {
             Tab::Overview => {
@@ -937,9 +1011,9 @@ impl App {
                     // Cycle: Students -> SchoolYears? -> Schedule -> Homework -> Grades -> Students
                     match self.focus {
                         Focus::Students => {
-                            if has_years { Focus::SchoolYears } else { Focus::OverviewSchedule }
+                            if has_years { Focus::Schools } else { Focus::OverviewSchedule }
                         }
-                        Focus::SchoolYears => Focus::OverviewSchedule,
+                        Focus::Schools => Focus::OverviewSchedule,
                         Focus::OverviewSchedule => Focus::OverviewHomework,
                         Focus::OverviewHomework => Focus::OverviewGrades,
                         Focus::OverviewGrades => Focus::Students,
@@ -948,11 +1022,11 @@ impl App {
                 } else {
                     // No students pane: SchoolYears? -> Schedule -> Homework -> Grades -> ...
                     match self.focus {
-                        Focus::SchoolYears => Focus::OverviewSchedule,
+                        Focus::Schools => Focus::OverviewSchedule,
                         Focus::OverviewSchedule => Focus::OverviewHomework,
                         Focus::OverviewHomework => Focus::OverviewGrades,
                         Focus::OverviewGrades => {
-                            if has_years { Focus::SchoolYears } else { Focus::OverviewSchedule }
+                            if has_years { Focus::Schools } else { Focus::OverviewSchedule }
                         }
                         _ => Focus::OverviewSchedule,
                     }
@@ -963,16 +1037,16 @@ impl App {
                     // Students -> SchoolYears? -> Content -> Students
                     match self.focus {
                         Focus::Students => {
-                            if has_years { Focus::SchoolYears } else { Focus::Content }
+                            if has_years { Focus::Schools } else { Focus::Content }
                         }
-                        Focus::SchoolYears => Focus::Content,
+                        Focus::Schools => Focus::Content,
                         _ => Focus::Students,
                     }
                 } else if has_years {
                     // SchoolYears -> Content -> SchoolYears
                     match self.focus {
-                        Focus::SchoolYears => Focus::Content,
-                        _ => Focus::SchoolYears,
+                        Focus::Schools => Focus::Content,
+                        _ => Focus::Schools,
                     }
                 } else {
                     // No sidebar panes: stay on Content
@@ -1718,7 +1792,7 @@ pub enum ClickResult {
     ItemSelected(usize),         // Item index selected
     ActivateNotification(usize), // Notification index to activate
     ActivateMessage(usize),      // Message index to open
-    SchoolYearChanged(i64),      // School year changed
+    SwitchSchool(i64, i64),      // Switch to school context (user_id, school_year)
 }
 
 #[cfg(test)]
@@ -2587,5 +2661,101 @@ mod tests {
         let empty: Vec<ScheduleHour> = vec![];
         let result = compute_effective_date("2026-03-11", 15, 0, &[&empty]);
         assert_eq!(result, "2026-03-11");
+    }
+
+    fn ctx(user_id: i64, year: i64, school: &str, selected: bool) -> SchoolContext {
+        SchoolContext {
+            user_id,
+            school_year: year,
+            school_name: school.into(),
+            user_name: None,
+            is_selected: selected,
+        }
+    }
+
+    #[test]
+    fn test_school_contexts_visible_current_year_only() {
+        let mut app = App::new();
+        app.set_school_contexts(vec![
+            ctx(1, 2026, "School A", true),
+            ctx(2, 2026, "School B", false),
+            ctx(1, 2025, "School A", false),
+            ctx(3, 2024, "School C", false),
+        ]);
+
+        // Active context taken from the server's isSelected flag
+        assert_eq!(app.active_context, Some((1, 2026)));
+        assert_eq!(app.current_school_year(), Some(2026));
+        assert!(app.has_schools_pane());
+
+        // Only current-year schools are listed by default
+        let visible: Vec<(i64, i64)> = app.visible_contexts().iter().map(|c| c.key()).collect();
+        assert_eq!(visible, vec![(1, 2026), (2, 2026)]);
+        // Cursor sits on the active context
+        assert_eq!(app.selected_context, 0);
+
+        // 'y' reveals previous years too
+        app.toggle_all_years();
+        assert_eq!(app.visible_contexts().len(), 4);
+        app.toggle_all_years();
+        assert_eq!(app.visible_contexts().len(), 2);
+    }
+
+    #[test]
+    fn test_school_contexts_cursor_and_switch() {
+        let mut app = App::new();
+        app.set_school_contexts(vec![
+            ctx(1, 2026, "School A", true),
+            ctx(2, 2026, "School B", false),
+            ctx(3, 2024, "School C", false),
+        ]);
+
+        app.next_school();
+        assert_eq!(app.selected_school().map(|c| c.user_id), Some(2));
+        app.next_school(); // wraps
+        assert_eq!(app.selected_school().map(|c| c.user_id), Some(1));
+        app.prev_school();
+        assert_eq!(app.selected_school().map(|c| c.user_id), Some(2));
+
+        // Switching updates the active context, flags and cursor
+        app.set_active_context(2, 2026);
+        assert_eq!(app.active_context, Some((2, 2026)));
+        assert!(app.school_contexts.iter().find(|c| c.user_id == 2).unwrap().is_selected);
+        assert!(!app.school_contexts.iter().find(|c| c.user_id == 1).unwrap().is_selected);
+        assert_eq!(app.selected_context, 1);
+
+        // A fresh context list from the server keeps our active choice
+        app.set_school_contexts(vec![
+            ctx(1, 2026, "School A", true),
+            ctx(2, 2026, "School B", false),
+        ]);
+        assert_eq!(app.active_context, Some((2, 2026)));
+    }
+
+    #[test]
+    fn test_active_previous_year_context_stays_visible() {
+        let mut app = App::new();
+        app.set_school_contexts(vec![
+            ctx(1, 2026, "School A", false),
+            ctx(3, 2024, "School C", false),
+        ]);
+        // Token says we're still on the old year's school
+        app.set_active_context(3, 2024);
+
+        let visible: Vec<(i64, i64)> = app.visible_contexts().iter().map(|c| c.key()).collect();
+        assert_eq!(visible, vec![(1, 2026), (3, 2024)]);
+        assert_eq!(app.selected_context, 1);
+    }
+
+    #[test]
+    fn test_students_pane_shown_with_single_student_and_many_schools() {
+        let mut app = App::new();
+        app.students = vec![
+            StudentData::new(Student { id: 1, name: "Alice".into(), class_name: None, school_name: None }),
+        ];
+        assert!(!app.has_students_pane());
+
+        app.set_school_contexts(vec![ctx(1, 2026, "A", true), ctx(2, 2026, "B", false)]);
+        assert!(app.has_students_pane());
     }
 }

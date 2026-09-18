@@ -42,7 +42,7 @@ X-Guest-Token: {guest_token}
 | POST | `/v1/auth/authenticate-login` | Authenticate login request |
 | POST | `/v1/auth/login-pending-token` | Login with pending token |
 | POST | `/v1/auth/register-identity-login` | Register identity login |
-| POST | `/v1/auth/switchUserAndYear` | Switch user and school year |
+| POST | `/v1/auth/switchUserAndYear` | Switch user (school) and school year — see below |
 | GET | `/v1/auth/switchYear/{year_id}` | Switch school year |
 | GET | `/v1/auth/users` | Get user list |
 | GET | `/v1/auth/usersAndYears` | Get users and available years |
@@ -50,6 +50,29 @@ X-Guest-Token: {guest_token}
 | GET | `/v1/auth/get-all-enabled-modules` | Get enabled modules for user |
 | GET | `/v1/auth/get-sentry-options` | Get Sentry configuration |
 | GET | `/v1/auth/download/{id}` | Download authenticated file |
+
+#### Switching user (school) and school year
+
+A parent with children in several schools has one "user" per school (and per year);
+`/v1/auth/usersAndYears` lists them and marks the active one `isSelected`. Verified live:
+
+```
+POST /v1/auth/switchUserAndYear
+{"user_id": 3562478, "year": 2026}
+```
+
+- `user_id` is required (`422 {"message":"Полето user id е задължително."}` otherwise).
+- The year key is `year`. `school_year`, `year_id` and `schoolYear` are silently ignored
+  (the year then stays as it was). Year id 2026 means the 2026/27 school year.
+- Response: `user` `{id, school_name, user_name, roles, roles_ids, region_id}`, `apiToken`
+  (the same bearer token — it does not rotate), `selectedYear`, `lastYear`,
+  `allSchoolYears`, `hasActiveYears`, `schoolId`, `schoolSettings`, `allEnabledModules`,
+  `diaryLockDate`, `pupilsAvailableForActivation`, `pupilsWaitingApproval`,
+  `isVirtualSchoolEnabled`.
+- The selection is server-side state tied to the token: afterwards `/v1/diary/pupils`
+  returns that school's pupils. A token imported from the mobile app shares this state
+  with the app, so switching here also switches the app.
+- The `School-Year` header does not change what `usersAndYears` reports as selected.
 
 #### Two-Factor Authentication
 | Method | Endpoint | Description |

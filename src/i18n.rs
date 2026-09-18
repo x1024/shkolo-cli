@@ -455,18 +455,35 @@ impl T {
     pub fn cli_web_login_failed(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Уеб автентикацията се провали. Проверете бисквитката.", Lang::En => "Web authentication failed. Check your cookie value." }
     }
-    pub fn cli_year_unavailable(lang: Lang, year: &str) -> String {
+    // Schools (school contexts)
+    pub fn schools(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Училища", Lang::En => "Schools" }
+    }
+    pub fn schools_all_years(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Училища (всички години)", Lang::En => "Schools (all years)" }
+    }
+    pub fn switching_school(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Превключване към", Lang::En => "Switching to" }
+    }
+    pub fn switched_school(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Училище", Lang::En => "School" }
+    }
+    pub fn school_switch_failed(lang: Lang, school: &str, err: &str) -> String {
         match lang {
-            Lang::Bg => format!("{} не е достъпна с тази сесия", year),
-            Lang::En => format!("{} is not available with this session", year),
+            Lang::Bg => format!("Неуспешно превключване към {}\n{}", school, err),
+            Lang::En => format!("Failed to switch to {}\n{}", school, err),
         }
     }
-
-    // School year
-    pub fn school_year(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Учебна година", Lang::En => "School Year" }
+    pub fn key_switch_school(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Избери училище", Lang::En => "Switch to school" }
     }
-    pub fn school_years(lang: Lang) -> &'static str {
-        match lang { Lang::Bg => "Учебни години", Lang::En => "School Years" }
+    pub fn key_toggle_years(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Покажи/скрий предишни години", Lang::En => "Show/hide previous years" }
+    }
+    pub fn cli_school(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Училище", Lang::En => "School" }
+    }
+    pub fn cli_available_schools(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Налични училища", Lang::En => "Available schools" }
     }
 }

@@ -33,6 +33,8 @@ enum BackgroundResult {
         notifications: Vec<Notification>,
         messages: Vec<MessageThread>,
         effective_date: String,
+        /// Fresh usersAndYears entries (school contexts), if the call succeeded
+        contexts: Option<Vec<UserYearEntry>>,
     },
     /// Schedule-only refresh completed
     ScheduleRefresh {
@@ -202,6 +204,24 @@ enum JsonCommands {
         /// Student name or index (optional, defaults to first)
         student: Option<String>,
     },
+
+    /// List schools (parent user contexts) available to this account
+    Schools {
+        /// Include schools from previous school years
+        #[arg(long)]
+        all_years: bool,
+    },
+
+    /// Switch the active school (parent user) and school year
+    SwitchSchool {
+        /// Parent user id, as listed by `json schools`
+        #[arg(long)]
+        user_id: i64,
+
+        /// School year id (defaults to the latest year for that user)
+        #[arg(long)]
+        year: Option<i64>,
+    },
 }
 
 #[tokio::main]
@@ -213,6 +233,8 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("SHKOLO_CACHE_TTL").ok().and_then(|v| v.parse().ok()));
 
     let cache = CacheStore::new(ttl)?;
+    // Students, notifications and messages are cached per school context
+    let cache = cache.with_context(token_context_key(&cache));
 
     // Resolve language: --lang flag > persisted ui_config > SHKOLO_LANG env > default (Bg)
     let lang = if let Some(ref lang_str) = cli.lang {
@@ -233,7 +255,7 @@ async fn main() -> Result<()> {
             run_json_command(command, &cache, cli.refresh, cli.no_cache, &format).await
         }
         Commands::Tui => run_tui(&cache, lang).await,
-        Commands::ImportToken => import_token(&cache, lang),
+        Commands::ImportToken => import_token(&cache, lang).await,
         Commands::Login { username, password } => login(&cache, username, password, lang).await,
         Commands::LoginGoogle { token } => login_google(&cache, token, lang).await,
         Commands::LoginWeb { cookie, xsrf_token } => login_web(&cache, &cookie, xsrf_token.as_deref(), lang).await,
@@ -253,7 +275,7 @@ async fn run_json_command(
     no_cache: bool,
     format: &str,
 ) -> Result<()> {
-    let client = get_authenticated_client(cache)?;
+    let mut client = get_authenticated_client(cache)?;
 
     match command {
         JsonCommands::Students => {
@@ -446,6 +468,59 @@ async fn run_json_command(
 
             output_json(&api::ApiResponse::new(results, false, None), format)?;
         }
+        JsonCommands::Schools { all_years } => {
+            let response = client.get_users_and_years().await?;
+            let contexts = SchoolContext::from_entries(response.users.as_deref().unwrap_or(&[]));
+            let current = SchoolContext::current_year(&contexts);
+            let active = cache.load_token().ok().and_then(|t| Some((t.user_id?, t.school_year?)));
+
+            let schools: Vec<serde_json::Value> = contexts.iter()
+                .filter(|c| all_years || c.is_current(current))
+                .map(|c| serde_json::json!({
+                    "user_id": c.user_id,
+                    "school_year": c.school_year,
+                    "year_label": c.year_label(),
+                    "school_name": c.school_name,
+                    "user_name": c.user_name,
+                    "is_current_year": c.is_current(current),
+                    "active": Some(c.key()) == active || (active.is_none() && c.is_selected),
+                }))
+                .collect();
+
+            output_json(&api::ApiResponse::new(serde_json::json!({
+                "current_school_year": current,
+                "schools": schools,
+            }), false, None), format)?;
+        }
+        JsonCommands::SwitchSchool { user_id, year } => {
+            let year = match year {
+                Some(y) => y,
+                None => {
+                    let response = client.get_users_and_years().await?;
+                    response.users.iter().flatten()
+                        .filter(|e| e.id == Some(user_id))
+                        .filter_map(|e| e.school_year)
+                        .max()
+                        .ok_or_else(|| anyhow!("Unknown user id {}", user_id))?
+                }
+            };
+
+            let users = client.switch_user_and_year(user_id, year, None).await?;
+            persist_context_switch(cache, &client, &users, user_id, year);
+
+            let school_name = users.users.iter().flatten()
+                .find(|e| e.id == Some(user_id) && e.school_year == Some(year))
+                .and_then(|e| e.school_name.clone());
+
+            output_json(&api::ApiResponse::new(serde_json::json!({
+                "switched": true,
+                "user_id": user_id,
+                "school_year": year,
+                "year_label": SchoolContext::year_label_for(year),
+                "school_name": school_name,
+                "token_changed": cache.load_token().map(|t| t.token != client.token().unwrap_or_default()).unwrap_or(false),
+            }), false, None), format)?;
+        }
         JsonCommands::Thread { thread_id } => {
             // Get raw thread data for debugging
             match client.get_thread_raw(thread_id).await {
@@ -481,6 +556,8 @@ async fn run_json_command(
 
 async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
     let mut client = get_authenticated_client(cache)?;
+    // Owned copy so the cache can be re-scoped when the school context changes
+    let mut cache: CacheStore = cache.clone();
 
     // Create app (before raw mode so we can print errors)
     let mut app = App::new();
@@ -504,10 +581,13 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
         }
     }
 
-    // TODO: School year selection is disabled until we figure out year-switching auth.
-    // The code in app.rs, ui.rs, handlers.rs is ready — just need to populate
-    // app.school_years here once year switching works.
-    // See: get_users_and_years() API, UserYearEntry struct, SchoolYearChanged action.
+    // School contexts (one per school per year) from the token file; refreshed in the background
+    if let Ok(token_data) = cache.load_token() {
+        if let (Some(user_id), Some(year)) = (token_data.user_id, token_data.school_year) {
+            app.active_context = Some((user_id, year));
+        }
+        app.set_school_contexts(contexts_from_token(&token_data));
+    }
 
     // Load UI configuration (pane sizes, etc.)
     let ui_config = cache.load_ui_config();
@@ -526,7 +606,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Load cached data first
-    app.load_from_cache(cache).await;
+    app.load_from_cache(&cache).await;
 
     // If no cached data, refresh
     if app.students.is_empty() {
@@ -535,7 +615,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
         app.set_status(T::loading_data(app.lang));
         terminal.draw(|f| draw(f, &app))?;
 
-        if let Err(e) = app.refresh_data(&client, cache, false).await {
+        if let Err(e) = app.refresh_data(&client, &cache, false).await {
             app.set_status(format!("{} {}", T::error_prefix(app.lang), e));
         }
     }
@@ -561,6 +641,9 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
     };
 
     loop {
+        // A school switch requested by key or mouse this iteration; handled after the select!
+        let mut pending_switch: Option<(i64, i64)> = None;
+
         // Update time periodically for schedule highlighting (once per minute is enough)
         if last_time_update.elapsed() >= Duration::from_secs(60) {
             app.update_time();
@@ -612,11 +695,20 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
 
                 if let Some(Ok(bg_result)) = result {
                     match bg_result {
-                        BackgroundResult::DataRefresh { students, notifications, messages, effective_date } => {
+                        BackgroundResult::DataRefresh { students, notifications, messages, effective_date, contexts } => {
                             app.students = students;
                             app.notifications = notifications;
                             app.messages = messages;
                             app.effective_date = effective_date;
+                            if let Some(entries) = contexts {
+                                app.set_school_contexts(SchoolContext::from_entries(&entries));
+                                if let Ok(mut token_data) = cache.load_token() {
+                                    if let Ok(json) = serde_json::to_value(&entries) {
+                                        store_users_in_token(&mut token_data, json);
+                                        let _ = cache.save_token_full(&token_data);
+                                    }
+                                }
+                            }
                             // Reset schedule_date to effective date (today or next school day)
                             app.schedule_today();
                             app.set_status("Refreshed");
@@ -776,45 +868,8 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                     }
                                     app.loading = false;
                                 }
-                                Action::SchoolYearChanged(year_id) if background_task.is_none() => {
-                                    let prev_year = client.school_year();
-                                    let prev_selected = app.selected_school_year;
-                                    client.set_school_year(year_id);
-
-                                    // Verify the new year works before committing
-                                    app.set_status(format!("{}: {}/{}...", T::school_year(app.lang), year_id - 1, year_id));
-                                    terminal.draw(|f| draw(f, &app))?;
-
-                                    match client.verify_auth().await {
-                                        Ok(_) => {
-                                            // Persist the new school year in token
-                                            if let Ok(mut token_data) = cache.load_token() {
-                                                token_data.school_year = Some(year_id);
-                                                let _ = cache.save_token_full(&token_data);
-                                            }
-
-                                            // Clear data cache and trigger refresh
-                                            let _ = cache.clear();
-                                            app.loading = true;
-                                            app.set_status(format!("{}: {}/{}", T::school_year(app.lang), year_id - 1, year_id));
-                                            let client_clone = client.clone();
-                                            let cache_clone = cache.clone();
-                                            let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
-                                            background_task = Some(Box::pin(async move {
-                                                refresh_data_background(&client_clone, &cache_clone, true, student_ids).await
-                                            }));
-                                            last_auto_refresh = std::time::Instant::now();
-                                        }
-                                        Err(_) => {
-                                            // Revert to previous year
-                                            if let Some(y) = prev_year {
-                                                client.set_school_year(y);
-                                            }
-                                            app.selected_school_year = prev_selected;
-                                            let year_name = format!("{}/{}", year_id - 1, year_id);
-                                            app.set_error(T::cli_year_unavailable(app.lang, &year_name));
-                                        }
-                                    }
+                                Action::SwitchSchool { user_id, school_year } if background_task.is_none() => {
+                                    pending_switch = Some((user_id, school_year));
                                 }
                                 Action::NavigateBack | Action::NavigateForward => {
                                     // Navigation was handled in the handler, but we may need
@@ -843,7 +898,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                 Action::None => {}
                                 // These are handled by guards above (when background_task.is_none())
                                 // If we get here, a background task is already running
-                                Action::Refresh | Action::RefreshAll | Action::RefreshSchedule | Action::SchoolYearChanged(_) => {
+                                Action::Refresh | Action::RefreshAll | Action::RefreshSchedule | Action::SwitchSchool { .. } => {
                                     // Already refreshing, ignore
                                 }
                             }
@@ -900,41 +955,9 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                                         }
                                                     }
                                                 }
-                                                ClickResult::SchoolYearChanged(year_id) => {
+                                                ClickResult::SwitchSchool(user_id, school_year) => {
                                                     if background_task.is_none() {
-                                                        let prev_year = client.school_year();
-                                                        let prev_selected = app.selected_school_year;
-                                                        client.set_school_year(year_id);
-
-                                                        app.set_status(format!("{}: {}/{}...", T::school_year(app.lang), year_id - 1, year_id));
-                                                        terminal.draw(|f| draw(f, &app))?;
-
-                                                        match client.verify_auth().await {
-                                                            Ok(_) => {
-                                                                if let Ok(mut token_data) = cache.load_token() {
-                                                                    token_data.school_year = Some(year_id);
-                                                                    let _ = cache.save_token_full(&token_data);
-                                                                }
-                                                                let _ = cache.clear();
-                                                                app.loading = true;
-                                                                app.set_status(format!("{}: {}/{}", T::school_year(app.lang), year_id - 1, year_id));
-                                                                let client_clone = client.clone();
-                                                                let cache_clone = cache.clone();
-                                                                let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
-                                                                background_task = Some(Box::pin(async move {
-                                                                    refresh_data_background(&client_clone, &cache_clone, true, student_ids).await
-                                                                }));
-                                                                last_auto_refresh = std::time::Instant::now();
-                                                            }
-                                                            Err(_) => {
-                                                                if let Some(y) = prev_year {
-                                                                    client.set_school_year(y);
-                                                                }
-                                                                app.selected_school_year = prev_selected;
-                                                                let year_name = format!("{}/{}", year_id - 1, year_id);
-                                                                app.set_error(T::cli_year_unavailable(app.lang, &year_name));
-                                                            }
-                                                        }
+                                                        pending_switch = Some((user_id, school_year));
                                                     }
                                                 }
                                                 ClickResult::ItemSelected(_) | ClickResult::StudentSelected | ClickResult::None => {}
@@ -966,6 +989,27 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
             }
         } // end tokio::select!
 
+        if let Some((user_id, school_year)) = pending_switch.take() {
+            let school_name = app.school_contexts.iter()
+                .find(|c| c.user_id == user_id && c.school_year == school_year)
+                .map(|c| c.school_name.clone())
+                .unwrap_or_else(|| format!("#{}", user_id));
+            app.set_status(format!("{} {}...", T::switching_school(app.lang), school_name));
+            terminal.draw(|f| draw(f, &app))?;
+
+            if switch_school_context(&mut client, &mut cache, &mut app, user_id, school_year).await.is_ok() {
+                // Cached data for the new school is shown already; fetch whatever is stale
+                app.loading = true;
+                let client_clone = client.clone();
+                let cache_clone = cache.clone();
+                let student_ids: Vec<i64> = app.students.iter().map(|s| s.student.id).collect();
+                background_task = Some(Box::pin(async move {
+                    refresh_data_background(&client_clone, &cache_clone, false, student_ids).await
+                }));
+                last_auto_refresh = std::time::Instant::now();
+            }
+        }
+
         if !app.running {
             break;
         }
@@ -986,7 +1030,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
     Ok(())
 }
 
-fn import_token(cache: &CacheStore, lang: Lang) -> Result<()> {
+async fn import_token(cache: &CacheStore, lang: Lang) -> Result<()> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
     let ios_path = home.join(IOS_APP_STORAGE);
 
@@ -1012,7 +1056,7 @@ fn import_token(cache: &CacheStore, lang: Lang) -> Result<()> {
     let user_id = data.get("@ShkoloStore:CurrentUserId")
         .and_then(|v| v.as_str());
 
-    cache.save_token(token, None, Some(serde_json::json!({
+    cache.save_token(token, None, user_id.and_then(|id| id.parse().ok()), Some(serde_json::json!({
         "names": user_name,
         "id": user_id,
     })))?;
@@ -1021,6 +1065,38 @@ fn import_token(cache: &CacheStore, lang: Lang) -> Result<()> {
     println!("{}: {}", T::cli_user(lang), user_name);
     if let Some(id) = user_id {
         println!("User ID: {}", id);
+    }
+
+    // Fetch the school contexts so status and the TUI know the active school right away
+    let client = ShkoloClient::with_token(token.to_string(), None);
+    match client.get_users_and_years().await {
+        Ok(users) => {
+            let selected = users.users.iter().flatten().find(|e| e.is_selected == Some(true));
+            if let Ok(mut token_data) = cache.load_token() {
+                token_data.user_id = selected.and_then(|e| e.id).or_else(|| user_id.and_then(|s| s.parse().ok()));
+                token_data.school_year = selected.and_then(|e| e.school_year);
+                if let Ok(json) = serde_json::to_value(&users) {
+                    store_users_in_token(&mut token_data, json);
+                }
+                cache.save_token_full(&token_data)?;
+            }
+
+            let contexts = SchoolContext::from_entries(users.users.as_deref().unwrap_or(&[]));
+            let current = SchoolContext::current_year(&contexts);
+            let current_schools: Vec<&SchoolContext> = contexts.iter().filter(|c| c.is_current(current)).collect();
+            if let Some(active) = current_schools.iter().find(|c| c.is_selected) {
+                println!("{}: {} ({})", T::cli_school(lang), active.school_name, active.year_label());
+            }
+            if current_schools.len() > 1 {
+                println!("{}:", T::cli_available_schools(lang));
+                for c in current_schools {
+                    println!("  {} {} [user {}]", if c.is_selected { "*" } else { " " }, c.school_name, c.user_id);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: could not fetch schools ({}). Run 'shkolo status' after the first TUI refresh.", e);
+        }
     }
 
     Ok(())
@@ -1055,6 +1131,7 @@ async fn login(cache: &CacheStore, username: Option<String>, password: Option<St
     cache.save_token(
         client.token().unwrap(),
         client.school_year(),
+        selected_user_id(&response),
         Some(user_data.clone()),
     )?;
 
@@ -1070,6 +1147,17 @@ async fn login(cache: &CacheStore, username: Option<String>, password: Option<St
                 if let Some(roles_str) = roles.as_str() {
                     println!("  {}: {}", T::cli_roles(lang), roles_str);
                 }
+            }
+        }
+
+        // Show the schools selectable for the current school year
+        let contexts = SchoolContext::from_entries(&entries);
+        let current = SchoolContext::current_year(&contexts);
+        let current_schools: Vec<&SchoolContext> = contexts.iter().filter(|c| c.is_current(current)).collect();
+        if current_schools.len() > 1 {
+            println!("  {}:", T::cli_available_schools(lang));
+            for c in current_schools {
+                println!("    {} {} ({})", if c.is_selected { "*" } else { " " }, c.school_name, c.year_label());
             }
         }
     }
@@ -1113,6 +1201,7 @@ async fn login_google(cache: &CacheStore, token: Option<String>, lang: Lang) -> 
     cache.save_token(
         client.token().unwrap(),
         client.school_year(),
+        selected_user_id(&response),
         Some(user_data),
     )?;
 
@@ -1131,25 +1220,30 @@ async fn login_web(cache: &CacheStore, cookie: &str, xsrf_token: Option<&str>, l
     // Verify cookie works by probing the API
     match client.verify_auth().await {
         Ok(_) => {
-            // Try to get school year info
+            // Try to get school year and user (school) info
             let mut school_year = None;
+            let mut user_id = None;
+            let mut user_data = None;
             if let Ok(users_response) = client.get_users_and_years().await {
                 if let Some(ref entries) = users_response.users {
                     // Prefer the isSelected entry
                     if let Some(selected) = entries.iter().find(|e| e.is_selected == Some(true)) {
                         school_year = selected.school_year;
+                        user_id = selected.id;
                     } else {
                         school_year = entries.iter().filter_map(|e| e.school_year).max();
                     }
                 }
+                user_data = serde_json::to_value(&users_response).ok();
             }
 
             let token_data = cache::TokenData {
                 token: cookie.to_string(),
                 school_year,
-                user_data: None,
+                user_data,
                 auth_type: Some("cookie".to_string()),
                 xsrf_token: xsrf_token.map(|s| s.to_string()),
+                user_id,
             };
             cache.save_token_full(&token_data)?;
 
@@ -1198,7 +1292,23 @@ fn show_status(cache: &CacheStore, lang: Lang) -> Result<()> {
             }
 
             if let Some(year) = token_data.school_year {
-                println!("{}: {}", T::cli_school_year_id(lang), year);
+                println!("{}: {} ({})", T::cli_school_year_id(lang), year, SchoolContext::year_label_for(year));
+            }
+
+            // Active school and the other schools selectable this year
+            let contexts = contexts_from_token(&token_data);
+            let active = token_data.user_id.zip(token_data.school_year)
+                .or_else(|| contexts.iter().find(|c| c.is_selected).map(|c| c.key()));
+            if let Some(ctx) = contexts.iter().find(|c| Some(c.key()) == active) {
+                println!("{}: {}", T::cli_school(lang), ctx.school_name);
+            }
+            let current = SchoolContext::current_year(&contexts);
+            let current_schools: Vec<&SchoolContext> = contexts.iter().filter(|c| c.is_current(current)).collect();
+            if current_schools.len() > 1 {
+                println!("{}:", T::cli_available_schools(lang));
+                for c in current_schools {
+                    println!("  {} {} ({}) [user {}]", if Some(c.key()) == active { "*" } else { " " }, c.school_name, c.year_label(), c.user_id);
+                }
             }
 
             println!();
@@ -1732,11 +1842,15 @@ async fn refresh_data_background(
         Err(_) => Vec::new(),
     };
 
+    // Refresh the list of school contexts (non-fatal if it fails)
+    let contexts = client.get_users_and_years().await.ok().and_then(|r| r.users);
+
     Ok(BackgroundResult::DataRefresh {
         students: student_data_list,
         notifications,
         messages,
         effective_date,
+        contexts,
     })
 }
 
@@ -1754,4 +1868,119 @@ async fn refresh_schedule_background(
         date: date.to_string(),
         schedule,
     })
+}
+
+// --- School context helpers ---
+
+/// Cache namespace for the school context stored in the token file
+fn token_context_key(cache: &CacheStore) -> Option<String> {
+    let token = cache.load_token().ok()?;
+    Some(SchoolContext::cache_key_for(token.user_id?, token.school_year?))
+}
+
+/// The parent user id the server marks as selected after login
+fn selected_user_id(response: &UsersAndYearsResponse) -> Option<i64> {
+    response.users.iter().flatten()
+        .find(|e| e.is_selected == Some(true))
+        .and_then(|e| e.id)
+}
+
+/// School contexts stored in the token file's user data (from login or a later refresh)
+fn contexts_from_token(token_data: &cache::TokenData) -> Vec<SchoolContext> {
+    token_data.user_data.as_ref()
+        .and_then(|d| d.get("users"))
+        .and_then(|u| serde_json::from_value::<Vec<UserYearEntry>>(u.clone()).ok())
+        .map(|entries| SchoolContext::from_entries(&entries))
+        .unwrap_or_default()
+}
+
+/// Store a fresh usersAndYears `users` array in the token's user data, keeping other keys
+fn store_users_in_token(token_data: &mut cache::TokenData, users_json: serde_json::Value) {
+    // Accept either the whole response ({"users": [...]}) or the bare array
+    let users = users_json.get("users").cloned().unwrap_or(users_json);
+    match token_data.user_data.as_mut() {
+        Some(serde_json::Value::Object(map)) => {
+            map.insert("users".to_string(), users);
+        }
+        _ => token_data.user_data = Some(serde_json::json!({ "users": users })),
+    }
+}
+
+/// Persist a completed server-side context switch: token (possibly new), year, user, contexts
+fn persist_context_switch(
+    cache: &CacheStore,
+    client: &ShkoloClient,
+    users: &UsersAndYearsResponse,
+    user_id: i64,
+    school_year: i64,
+) {
+    if let Ok(mut token_data) = cache.load_token() {
+        if let Some(token) = client.token() {
+            token_data.token = token.to_string();
+        }
+        token_data.school_year = Some(school_year);
+        token_data.user_id = Some(user_id);
+        if let Ok(json) = serde_json::to_value(users) {
+            store_users_in_token(&mut token_data, json);
+        }
+        let _ = cache.save_token_full(&token_data);
+    }
+}
+
+/// Switch the TUI to another school context: switch on the server, persist it,
+/// re-scope the cache and show whatever is cached for that school.
+/// On failure the client is restored and an error is shown in the TUI.
+async fn switch_school_context(
+    client: &mut ShkoloClient,
+    cache: &mut CacheStore,
+    app: &mut App,
+    user_id: i64,
+    school_year: i64,
+) -> Result<()> {
+    let school_name = app.school_contexts.iter()
+        .find(|c| c.user_id == user_id && c.school_year == school_year)
+        .map(|c| c.school_name.clone())
+        .unwrap_or_else(|| format!("#{}", user_id));
+
+    let prev_token = client.token().map(|t| t.to_string());
+    let prev_year = client.school_year();
+    let prev_context = app.active_context;
+
+    match client.switch_user_and_year(user_id, school_year, Some(&school_name)).await {
+        Ok(users) => {
+            persist_context_switch(cache, client, &users, user_id, school_year);
+            *cache = cache.with_context(Some(SchoolContext::cache_key_for(user_id, school_year)));
+
+            app.set_active_context(user_id, school_year);
+            if let Some(entries) = &users.users {
+                app.set_school_contexts(SchoolContext::from_entries(entries));
+            }
+
+            // Drop the previous school's data and load what is cached for this one
+            app.students.clear();
+            app.notifications.clear();
+            app.messages.clear();
+            app.selected_student = 0;
+            app.list_offset = 0;
+            app.load_from_cache(cache).await;
+
+            app.set_status(format!("{}: {}", T::switched_school(app.lang), school_name));
+            Ok(())
+        }
+        Err(e) => {
+            // Best effort: put the server back on the previous context, then restore the client
+            if let Some((prev_user, prev_school_year)) = prev_context {
+                let _ = client.switch_user_and_year(prev_user, prev_school_year, None).await;
+            }
+            if let Some(token) = prev_token {
+                client.set_token(token);
+            }
+            if let Some(year) = prev_year {
+                client.set_school_year(year);
+            }
+            app.sync_context_cursor();
+            app.set_error(T::school_switch_failed(app.lang, &school_name, &e.to_string()));
+            Err(e)
+        }
+    }
 }

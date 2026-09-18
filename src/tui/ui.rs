@@ -195,9 +195,9 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
         _ => {}
     }
 
-    // Only show students pane if there's more than one student
-    let show_students_pane = app.students.len() > 1;
-    let show_years_pane = app.has_school_years_pane();
+    // Students pane: more than one student, or several schools to choose from
+    let show_students_pane = app.has_students_pane();
+    let show_years_pane = app.has_schools_pane();
 
     let content_area = if show_students_pane || show_years_pane {
         let chunks = Layout::default()
@@ -208,22 +208,22 @@ fn draw_content(frame: &mut Frame, app: &App, area: Rect) {
             ])
             .split(area);
 
-        // Split sidebar vertically: students on top, school years on bottom
+        // Split sidebar vertically: students on top, schools on bottom
         if show_students_pane && show_years_pane {
-            let years_height = (app.school_years.len() as u16 + 2).min(10); // +2 for borders
+            let schools_height = app.schools_pane_height();
             let sidebar = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(5),                    // Students
-                    Constraint::Length(years_height),       // School years
+                    Constraint::Min(5),                      // Students
+                    Constraint::Length(schools_height),      // Schools
                 ])
                 .split(chunks[0]);
             draw_students_list(frame, app, sidebar[0]);
-            draw_school_years_list(frame, app, sidebar[1]);
+            draw_schools_list(frame, app, sidebar[1]);
         } else if show_students_pane {
             draw_students_list(frame, app, chunks[0]);
         } else {
-            draw_school_years_list(frame, app, chunks[0]);
+            draw_schools_list(frame, app, chunks[0]);
         }
 
         chunks[1]
@@ -288,29 +288,35 @@ fn draw_students_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-fn draw_school_years_list(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_schools_list(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
-    let is_focused = app.focus == Focus::SchoolYears;
+    let is_focused = app.focus == Focus::Schools;
+    let current_year = app.current_school_year();
 
-    let items: Vec<ListItem> = app.school_years
+    let items: Vec<ListItem> = app.visible_contexts()
         .iter()
         .enumerate()
-        .map(|(i, year)| {
-            let is_selected = i == app.selected_school_year;
-            let style = if is_selected {
-                if is_focused {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                }
+        .map(|(i, ctx)| {
+            let is_cursor = i == app.selected_context;
+            let is_active = Some(ctx.key()) == app.active_context;
+
+            // Active school is bright; the cursor is yellow only while the pane has focus
+            let style = if is_cursor && is_focused {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else if is_active {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
 
-            let prefix = if is_selected { "> " } else { "  " };
-            let fallback = format!("#{}", year.id);
-            let name = year.name.as_deref().unwrap_or(&fallback);
-            ListItem::new(format!("{}{}", prefix, name))
+            let prefix = if is_active { "● " } else if is_cursor && is_focused { "> " } else { "  " };
+            // Show the year for anything that is not from the current school year
+            let year_suffix = if app.show_all_years || !ctx.is_current(current_year) {
+                format!(" {}", ctx.year_label())
+            } else {
+                String::new()
+            };
+            ListItem::new(format!("{}{}{}", prefix, ctx.school_name, year_suffix))
                 .style(style)
         })
         .collect();
@@ -321,7 +327,11 @@ fn draw_school_years_list(frame: &mut Frame, app: &App, area: Rect) {
         Style::default()
     };
 
-    let title = format!(" {} ", T::school_years(lang));
+    let title = if app.show_all_years {
+        format!(" {} ", T::schools_all_years(lang))
+    } else {
+        format!(" {} ", T::schools(lang))
+    };
     let list = List::new(items)
         .block(Block::default()
             .borders(Borders::ALL)
