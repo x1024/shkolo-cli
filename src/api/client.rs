@@ -13,6 +13,21 @@ const USER_AGENT: &str = "Shkolo-app-iOS/1.43.3";
 const WEB_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const GOOGLE_CLIENT_ID: &str = "186341692533-14k2gd4i6fsj230cqu40jf04dp0igr3j.apps.googleusercontent.com";
 
+/// Attempts for a retryable request before a transient (5xx) server error is reported
+const MAX_ATTEMPTS: u32 = 4;
+/// Delay before the first retry; doubles on each further attempt (1s, 2s, 4s)
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
+
+/// Human-readable text of an API error body: the `message` field when the body is
+/// JSON (decoded, so escaped Cyrillic reads as text), otherwise the body as-is.
+fn api_error_message(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_string))
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| body.trim().to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
     Bearer,
@@ -151,49 +166,74 @@ impl ShkoloClient {
         headers
     }
 
+    /// GET request. Transient server errors are retried, see `send_with_retry`.
     async fn get<T: DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
         let url = format!("{}{}", self.base_url(), endpoint);
-        let response = self.client
-            .get(&url)
-            .headers(self.headers(true))
-            .send()
-            .await?;
-
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(anyhow!("Session expired. Please login again."));
-        }
-
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(anyhow!("API error ({}): {}", status, text));
-        }
-
-        let data = response.json().await?;
-        Ok(data)
+        let request = self.client.get(&url).headers(self.headers(true));
+        self.send_with_retry(request, "GET", endpoint, MAX_ATTEMPTS).await
     }
 
+    /// POST request, sent exactly once: most POSTs (login, sending a message) are
+    /// not safe to repeat blindly. Use `post_idempotent` for the ones that are.
     async fn post<T: DeserializeOwned, R: serde::Serialize>(&self, endpoint: &str, body: &R, authorized: bool) -> Result<T> {
         let url = format!("{}{}", self.base_url(), endpoint);
-        let response = self.client
-            .post(&url)
-            .headers(self.headers(authorized))
-            .json(body)
-            .send()
-            .await?;
+        let request = self.client.post(&url).headers(self.headers(authorized)).json(body);
+        self.send_with_retry(request, "POST", endpoint, 1).await
+    }
 
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(anyhow!("Session expired. Please login again."));
+    /// POST request whose effect is the same however many times it is applied
+    /// (e.g. selecting the active school). Retried like a GET.
+    async fn post_idempotent<T: DeserializeOwned, R: serde::Serialize>(&self, endpoint: &str, body: &R) -> Result<T> {
+        let url = format!("{}{}", self.base_url(), endpoint);
+        let request = self.client.post(&url).headers(self.headers(true)).json(body);
+        self.send_with_retry(request, "POST", endpoint, MAX_ATTEMPTS).await
+    }
+
+    /// Send a request, retrying transient (5xx) server errors with backoff.
+    ///
+    /// The Shkolo API intermittently answers 500 "Знаем за проблема и работим по
+    /// отстраняването му! Опитайте по-късно." ("We know about the problem and are
+    /// working on it, try later") in bursts of a few seconds, for requests that
+    /// succeed right afterwards. `max_attempts` of 1 disables retrying.
+    async fn send_with_retry<T: DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+        method: &str,
+        endpoint: &str,
+        max_attempts: u32,
+    ) -> Result<T> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let response = request
+                .try_clone()
+                .ok_or_else(|| anyhow!("Request body cannot be cloned for {} {}", method, endpoint))?
+                .send()
+                .await?;
+
+            let status = response.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(anyhow!("Session expired. Please login again."));
+            }
+
+            if !status.is_success() {
+                let text = response.text().await.unwrap_or_default();
+                if status.is_server_error() && attempt < max_attempts {
+                    tokio::time::sleep(RETRY_BASE_DELAY * 2u32.pow(attempt - 1)).await;
+                    continue;
+                }
+                return Err(anyhow!(
+                    "API error ({}) on {} {}: {}",
+                    status,
+                    method,
+                    endpoint,
+                    api_error_message(&text)
+                ));
+            }
+
+            let data = response.json().await?;
+            return Ok(data);
         }
-
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(anyhow!("API error ({}): {}", status, text));
-        }
-
-        let data = response.json().await?;
-        Ok(data)
     }
 
     /// Login with username and password
@@ -283,7 +323,7 @@ impl ShkoloClient {
             "year": school_year,
         });
 
-        let response: serde_json::Value = self.post("/v1/auth/switchUserAndYear", &body, true).await?;
+        let response: serde_json::Value = self.post_idempotent("/v1/auth/switchUserAndYear", &body).await?;
         // The response echoes the bearer token as `apiToken`; adopt it in case it ever rotates
         if let Some(token) = response.get("apiToken").or_else(|| response.get("token")).and_then(|v| v.as_str()) {
             if !token.is_empty() {
