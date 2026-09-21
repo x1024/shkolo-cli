@@ -33,25 +33,25 @@ pub fn calculate_scroll(selected: usize, visible_height: usize, total_items: usi
     ideal_center.min(max_scroll)
 }
 
-/// Calculate the next school day (skip weekends).
-/// Returns the next weekday after `date`.
+/// Calculate the next school day (skip weekends and public holidays).
+/// Returns the next school day after `date`.
 pub fn next_school_day(date: &str) -> Option<String> {
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
     let parsed = time::Date::parse(date, fmt).ok()?;
     let mut next = parsed + time::Duration::days(1);
-    while matches!(next.weekday(), time::Weekday::Saturday | time::Weekday::Sunday) {
+    while !crate::holidays::is_school_day(next) {
         next += time::Duration::days(1);
     }
     Some(format!("{:04}-{:02}-{:02}", next.year(), next.month() as u8, next.day()))
 }
 
 /// Compute the effective schedule date: today if school is in session,
-/// next school day if the school day is over or it's a weekend.
+/// next school day if the school day is over or today is a weekend or holiday.
 pub fn compute_effective_date(today: &str, current_hour: u8, current_minute: u8, schedules: &[&[ScheduleHour]]) -> String {
-    // Check if today is a weekend
+    // Check if today is a weekend or public holiday
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
     if let Ok(date) = time::Date::parse(today, fmt) {
-        if matches!(date.weekday(), time::Weekday::Saturday | time::Weekday::Sunday) {
+        if !crate::holidays::is_school_day(date) {
             return next_school_day(today).unwrap_or_else(|| today.to_string());
         }
     }
@@ -2160,6 +2160,34 @@ mod tests {
         assert_eq!(next_school_day("2026-03-14").unwrap(), "2026-03-16");
         // Sunday -> Monday
         assert_eq!(next_school_day("2026-03-15").unwrap(), "2026-03-16");
+    }
+
+    #[test]
+    fn test_next_school_day_skips_holidays() {
+        // Monday 21 Sep 2026 -> Wednesday (22 Sep is Independence Day)
+        assert_eq!(next_school_day("2026-09-21").unwrap(), "2026-09-23");
+        // Monday 2 Mar 2026 -> Wednesday (3 Mar is Liberation Day)
+        assert_eq!(next_school_day("2026-03-02").unwrap(), "2026-03-04");
+        // Thursday 9 Apr 2026 -> Tuesday after Easter Monday (Orthodox Easter is 12 Apr)
+        assert_eq!(next_school_day("2026-04-09").unwrap(), "2026-04-14");
+        // Friday 4 Sep 2026 -> Tuesday (Unification Day falls on Sunday, observed Monday)
+        assert_eq!(next_school_day("2026-09-04").unwrap(), "2026-09-08");
+    }
+
+    #[test]
+    fn test_compute_effective_date_holiday() {
+        // Independence Day (Tuesday) morning, even with a published timetable -> Wednesday
+        let schedule = vec![ScheduleHour {
+            hour_number: 1,
+            from_time: "08:00".into(),
+            to_time: "08:40".into(),
+            subject: "Math".into(),
+            teacher: None,
+            topic: None,
+            homework: None,
+            room: None,
+        }];
+        assert_eq!(compute_effective_date("2026-09-22", 8, 10, &[&schedule]), "2026-09-23");
     }
 
     #[test]

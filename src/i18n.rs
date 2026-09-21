@@ -137,6 +137,9 @@ impl T {
     pub fn no_schedule(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Няма часове за днес", Lang::En => "No classes scheduled" }
     }
+    pub fn holiday(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Празник", Lang::En => "Holiday" }
+    }
     pub fn no_notifications(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Няма известия", Lang::En => "No notifications" }
     }

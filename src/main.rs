@@ -1,5 +1,6 @@
 mod api;
 mod cache;
+mod holidays;
 mod i18n;
 mod models;
 mod tui;
@@ -351,6 +352,10 @@ async fn run_json_command(
                 all_schedules.push(serde_json::json!({
                     "student": s,
                     "date": date,
+                    "holiday": holidays::public_holiday_on(&date).map(|h| serde_json::json!({
+                        "name_bg": h.name_bg,
+                        "name_en": h.name_en,
+                    })),
                     "schedule": schedule,
                 }));
             }

@@ -302,6 +302,12 @@ fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
     draw_overview_grades(frame, app, bottom_chunks[1]);
 }
 
+/// List entry announcing a public holiday on the shown schedule date
+fn holiday_item(holiday: crate::holidays::Holiday, lang: crate::i18n::Lang) -> ListItem<'static> {
+    ListItem::new(format!("  ★ {}: {}", T::holiday(lang), holiday.name(lang)))
+        .style(Style::default().fg(Color::Yellow))
+}
+
 fn draw_overview_schedule(frame: &mut Frame, app: &App, area: Rect) {
     let lang = app.lang;
     let current_time = app.current_time;
@@ -309,9 +315,12 @@ fn draw_overview_schedule(frame: &mut Frame, app: &App, area: Rect) {
 
     let content = if let Some(data) = app.current_student() {
         if data.schedule.is_empty() {
-            vec![ListItem::new(format!("  {}", T::no_schedule(lang)))]
+            match crate::holidays::public_holiday_on(&app.effective_date) {
+                Some(holiday) => vec![holiday_item(holiday, lang)],
+                None => vec![ListItem::new(format!("  {}", T::no_schedule(lang)))],
+            }
         } else {
-            data.schedule
+            let mut items: Vec<ListItem> = data.schedule
                 .iter()
                 .map(|hour| {
                     // Parse times to determine if lesson has passed
@@ -343,7 +352,11 @@ fn draw_overview_schedule(frame: &mut Frame, app: &App, area: Rect) {
 
                     ListItem::new(line).style(style)
                 })
-                .collect()
+                .collect();
+            if let Some(holiday) = crate::holidays::public_holiday_on(&app.effective_date) {
+                items.insert(0, holiday_item(holiday, lang));
+            }
+            items
         }
     } else {
         vec![ListItem::new(format!("  {}", T::no_student(lang)))]
@@ -934,9 +947,12 @@ fn draw_schedule(frame: &mut Frame, app: &App, area: Rect) {
 
     let content = if let Some(data) = app.current_student() {
         if data.schedule.is_empty() {
-            vec![ListItem::new(format!("  {}", T::no_schedule(lang)))]
+            match crate::holidays::public_holiday_on(&app.schedule_date) {
+                Some(holiday) => vec![holiday_item(holiday, lang)],
+                None => vec![ListItem::new(format!("  {}", T::no_schedule(lang)))],
+            }
         } else {
-            data.schedule
+            let mut items: Vec<ListItem> = data.schedule
                 .iter()
                 .map(|hour| {
                     let (from_h, from_m) = parse_time(&hour.from_time);
@@ -998,7 +1014,11 @@ fn draw_schedule(frame: &mut Frame, app: &App, area: Rect) {
 
                     ListItem::new(lines)
                 })
-                .collect()
+                .collect();
+            if let Some(holiday) = crate::holidays::public_holiday_on(&app.schedule_date) {
+                items.insert(0, holiday_item(holiday, lang));
+            }
+            items
         }
     } else {
         vec![ListItem::new(format!("  {}", T::no_student(lang)))]
