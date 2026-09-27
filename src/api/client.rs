@@ -28,6 +28,30 @@ fn api_error_message(body: &str) -> String {
         .unwrap_or_else(|| body.trim().to_string())
 }
 
+/// A non-success HTTP answer from the API, kept typed so callers can react to
+/// specific statuses (e.g. 403 when the server is on another school).
+#[derive(Debug, Clone)]
+pub struct ApiError {
+    pub status: u16,
+    pub method: String,
+    pub endpoint: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "API error ({}) on {} {}: {}", self.status, self.method, self.endpoint, self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+/// Whether an error is the API refusing the request (HTTP 403). For per-school
+/// data this means the server currently has a different school selected.
+pub fn is_forbidden(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<ApiError>().map_or(false, |e| e.status == 403)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
     Bearer,
@@ -42,6 +66,10 @@ struct AuthState {
     token: Option<String>,
     school_year: Option<i64>,
     user_id: Option<i64>,
+    /// Whether `user_id`/`school_year` were confirmed against the server in this
+    /// process. Until then they are only what the token file remembers, and
+    /// another client sharing the token (the phone app) may have moved the server.
+    verified: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -222,13 +250,12 @@ impl ShkoloClient {
                     tokio::time::sleep(RETRY_BASE_DELAY * 2u32.pow(attempt - 1)).await;
                     continue;
                 }
-                return Err(anyhow!(
-                    "API error ({}) on {} {}: {}",
-                    status,
-                    method,
-                    endpoint,
-                    api_error_message(&text)
-                ));
+                return Err(ApiError {
+                    status: status.as_u16(),
+                    method: method.to_string(),
+                    endpoint: endpoint.to_string(),
+                    message: api_error_message(&text),
+                }.into());
             }
 
             let data = response.json().await?;
@@ -284,6 +311,8 @@ impl ShkoloClient {
             } else if let Some(max_year) = entries.iter().filter_map(|e| e.school_year).max() {
                 self.set_school_year(max_year);
             }
+            // Fresh from the server, so the local view is confirmed
+            self.set_context_verified();
         }
     }
 
@@ -361,12 +390,37 @@ impl ShkoloClient {
         }
 
         self.set_user_id(Some(user_id));
+        self.set_context_verified();
         Ok(users)
     }
 
+    /// Whether the local idea of the selected school was confirmed with the server
+    pub fn is_context_verified(&self) -> bool {
+        self.state.read().unwrap().verified
+    }
+
+    fn set_context_verified(&self) {
+        self.state.write().unwrap().verified = true;
+    }
+
+    /// Ask the server which school context is currently selected and adopt it.
+    ///
+    /// The selection is per token, so another client using the same token (the
+    /// phone app) may have switched schools since this process last looked.
+    /// Returns the context the server reports (user id, school year).
+    pub async fn sync_context(&self) -> Result<Option<(i64, i64)>> {
+        let users = self.get_users_and_years().await?;
+        self.adopt_selected(&users);
+        Ok(self.current_context())
+    }
+
     /// Switch to the given school context unless the server is already on it.
+    /// The first call in a process checks with the server where it really is.
     /// Returns whether a switch was made.
     pub async fn ensure_context(&self, user_id: i64, school_year: i64) -> Result<bool> {
+        if !self.is_context_verified() {
+            self.sync_context().await?;
+        }
         if self.current_context() == Some((user_id, school_year)) {
             return Ok(false);
         }

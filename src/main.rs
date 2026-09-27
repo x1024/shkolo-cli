@@ -531,9 +531,11 @@ async fn run_json_command(
             }), false, None), format)?;
         }
         JsonCommands::Thread { thread_id } => {
-            // Get raw thread data for debugging
-            match client.get_thread_raw(thread_id).await {
-                Ok(data) => output_json(&api::ApiResponse::new(data, false, None), format)?,
+            // Get raw thread data for debugging, in the school the thread was listed under
+            let context = cache.get_messages()
+                .and_then(|(threads, _, _)| thread_context(&threads, thread_id));
+            match with_thread_context(&client, cache, context, || client.get_thread_raw(thread_id)).await {
+                Ok((data, _)) => output_json(&api::ApiResponse::new(data, false, None), format)?,
                 Err(e) => output_json(&api::ApiResponse::new(serde_json::json!({
                     "error": e.to_string(),
                     "thread_id": thread_id,
@@ -781,8 +783,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                     app.set_status(T::loading_thread(app.lang));
                                     terminal.draw(|f| draw(f, &app))?;
 
-                                    let _ = ensure_thread_context(&client, cache, &mut app, thread_id).await;
-                                    match client.get_thread_messages(thread_id).await {
+                                    match load_thread_messages(&client, cache, &mut app, thread_id).await {
                                         Ok(messages) => {
                                             app.thread_messages = messages;
                                             app.loading = false;
@@ -804,11 +805,10 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                         app.set_status(T::sending(app.lang));
                                         terminal.draw(|f| draw(f, &app))?;
 
-                                        let _ = ensure_thread_context(&client, cache, &mut app, thread_id).await;
-                                        match client.reply_to_thread(thread_id, &message).await {
+                                        match send_thread_reply(&client, cache, &mut app, thread_id, &message).await {
                                             Ok(_) => {
                                                 // Reload thread messages
-                                                match client.get_thread_messages(thread_id).await {
+                                                match load_thread_messages(&client, cache, &mut app, thread_id).await {
                                                     Ok(messages) => {
                                                         app.thread_messages = messages;
                                                         app.set_status(T::message_sent(app.lang));
@@ -872,8 +872,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                             app.set_status(T::loading_thread(app.lang));
                                             terminal.draw(|f| draw(f, &app))?;
 
-                                            let _ = ensure_thread_context(&client, cache, &mut app, thread_id).await;
-                                            match client.get_thread_messages(thread_id).await {
+                                            match load_thread_messages(&client, cache, &mut app, thread_id).await {
                                                 Ok(messages) => {
                                                     app.thread_messages = messages;
                                                     app.loading = false;
@@ -936,8 +935,7 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                                     if let Some(thread_id) = app.open_thread_at(index) {
                                                         // Load thread messages
                                                         app.set_status(T::loading_thread(app.lang));
-                                                        let _ = ensure_thread_context(&client, cache, &mut app, thread_id).await;
-                                                        match client.get_thread_messages(thread_id).await {
+                                                        match load_thread_messages(&client, cache, &mut app, thread_id).await {
                                                             Ok(messages) => {
                                                                 app.thread_messages = messages;
                                                                 app.clear_status();
@@ -1851,8 +1849,9 @@ async fn refresh_data_background(
     force_refresh: bool,
     _student_ids: Vec<i64>,
 ) -> Result<BackgroundResult> {
-    // Where the server was before we started hopping between schools
-    let home_context = client.current_context();
+    // Where the server really is before we start hopping between schools (the phone
+    // app shares the token and may have moved it since we last looked)
+    let home_context = client.sync_context().await.ok().flatten().or_else(|| client.current_context());
 
     // Fetch students of all current-year schools
     let (students, _, _) = get_students(client, cache, force_refresh).await?;
@@ -1866,30 +1865,37 @@ async fn refresh_data_background(
 
         // A single failed call (the API returns sporadic 502s) must not hide the
         // whole refresh: fall back to whatever is cached for that item.
+        // The school is re-selected before every call: a foreground action (opening
+        // a message thread) can move the server to another school between two of them.
         let (homework, _, hw_age) = match get_homework(client, cache, student.id, force_refresh).await {
             Ok(r) => r,
             Err(_) => cached_or_empty(cache.get_homework(student.id)),
         };
+        ensure_student_context(client, cache, &student).await?;
         let (grades, _, grades_age) = match get_grades(client, cache, student.id, force_refresh).await {
             Ok(r) => r,
             Err(_) => cached_or_empty(cache.get_grades(student.id)),
         };
+        ensure_student_context(client, cache, &student).await?;
         let (absences, _, absences_age) = match get_absences(client, cache, student.id, force_refresh).await {
             Ok(r) => r,
             Err(_) => cached_or_empty(cache.get_absences(student.id)),
         };
+        ensure_student_context(client, cache, &student).await?;
         let (feedbacks, _, feedbacks_age) = match get_feedbacks(client, cache, student.id, force_refresh).await {
             Ok(r) => r,
             Err(_) => cached_or_empty(cache.get_feedbacks(student.id)),
         };
 
         // Get schedule - use today for background refresh
+        ensure_student_context(client, cache, &student).await?;
         let (schedule, _, schedule_age) = match get_schedule(client, cache, student.id, &today, force_refresh).await {
             Ok(r) => r,
             Err(_) => cached_or_empty(cache.get_schedule(student.id, &today)),
         };
 
         // Events (upcoming tests etc.); cached copy if the API call fails
+        ensure_student_context(client, cache, &student).await?;
         let events = match client.get_pupil_events(student.id).await {
             Ok(response) => {
                 let events: Vec<models::Event> = response.invitations
@@ -2034,20 +2040,42 @@ fn known_school_count(cache: &CacheStore) -> usize {
     contexts.iter().filter(|c| c.is_current(current)).count()
 }
 
-/// Make sure the server is on the given school context; on a switch, record it in the token file
+/// Make sure the server is on the given school context and keep the token file
+/// in step with where the client now knows the server to be.
 async fn ensure_context_persisted(client: &ShkoloClient, cache: &CacheStore, user_id: i64, school_year: i64) -> Result<bool> {
     let switched = client.ensure_context(user_id, school_year).await?;
-    if switched {
-        if let Ok(mut token_data) = cache.load_token() {
-            if let Some(token) = client.token() {
-                token_data.token = token;
-            }
-            token_data.user_id = Some(user_id);
-            token_data.school_year = Some(school_year);
-            let _ = cache.save_token_full(&token_data);
-        }
-    }
+    persist_context(client, cache);
     Ok(switched)
+}
+
+/// Switch to the given school context unconditionally, even if the client believes
+/// the server is already there (used after the server proved that belief wrong).
+async fn switch_context_persisted(client: &ShkoloClient, cache: &CacheStore, user_id: i64, school_year: i64) -> Result<()> {
+    client.switch_user_and_year(user_id, school_year, None).await?;
+    persist_context(client, cache);
+    Ok(())
+}
+
+/// Record the client's current token and school context in the token file if they changed
+fn persist_context(client: &ShkoloClient, cache: &CacheStore) {
+    let Ok(mut token_data) = cache.load_token() else { return };
+    let current = client.current_context();
+    let stored = match (token_data.user_id, token_data.school_year) {
+        (Some(u), Some(y)) => Some((u, y)),
+        _ => None,
+    };
+    let token = client.token();
+    if current == stored && (token.is_none() || token.as_deref() == Some(token_data.token.as_str())) {
+        return;
+    }
+    if let Some(token) = token {
+        token_data.token = token;
+    }
+    if let Some((user_id, school_year)) = current {
+        token_data.user_id = Some(user_id);
+        token_data.school_year = Some(school_year);
+    }
+    let _ = cache.save_token_full(&token_data);
 }
 
 /// Select the school a pupil belongs to before calling per-pupil endpoints
@@ -2058,16 +2086,98 @@ async fn ensure_student_context(client: &ShkoloClient, cache: &CacheStore, stude
     Ok(())
 }
 
-/// Select the school a message thread belongs to (threads are per parent user)
-async fn ensure_thread_context(client: &ShkoloClient, cache: &CacheStore, app: &mut App, thread_id: i64) -> Result<()> {
-    let context = app.messages.iter()
+/// The school context a message thread was listed under, if known
+fn thread_context(threads: &[MessageThread], thread_id: i64) -> Option<(i64, i64)> {
+    threads.iter()
         .find(|m| m.id == thread_id)
-        .and_then(|m| Some((m.user_id?, m.school_year?)));
+        .and_then(|m| Some((m.user_id?, m.school_year?)))
+}
+
+/// Run a messenger call for a thread with that thread's school selected on the server.
+///
+/// Threads belong to a parent user, i.e. to one school, and the server answers 403
+/// for a thread of a school that is not selected. The selection is per token, so the
+/// client's idea of it can be stale (the phone app or a refresh in flight may have
+/// moved it). On 403 the switch is therefore repeated explicitly and the call retried;
+/// a thread of unknown school is tried under every current-year school.
+/// Returns the result together with the school context that served it.
+async fn with_thread_context<T, F, Fut>(
+    client: &ShkoloClient,
+    cache: &CacheStore,
+    context: Option<(i64, i64)>,
+    op: F,
+) -> Result<(T, Option<(i64, i64)>)>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let mut switch_error = None;
     if let Some((user_id, school_year)) = context {
-        ensure_context_persisted(client, cache, user_id, school_year).await?;
-        app.set_active_context(user_id, school_year);
+        if let Err(e) = ensure_context_persisted(client, cache, user_id, school_year).await {
+            switch_error = Some(e);
+        }
     }
+
+    let first_error = match op().await {
+        Ok(value) => return Ok((value, context.or_else(|| client.current_context()))),
+        Err(e) if api::client::is_forbidden(&e) => e,
+        Err(e) => return Err(e),
+    };
+
+    // The server is on another school than believed: switch explicitly and retry
+    let candidates: Vec<(i64, i64)> = match context {
+        Some(ctx) => vec![ctx],
+        None => {
+            let server = client.sync_context().await.ok().flatten();
+            current_contexts(client, cache).await.unwrap_or_default()
+                .into_iter()
+                .map(|c| (c.user_id, c.school_year))
+                .filter(|c| Some(*c) != server)
+                .collect()
+        }
+    };
+    let mut last_error = switch_error.unwrap_or(first_error);
+    for (user_id, school_year) in candidates {
+        if let Err(e) = switch_context_persisted(client, cache, user_id, school_year).await {
+            last_error = e;
+            continue;
+        }
+        match op().await {
+            Ok(value) => return Ok((value, Some((user_id, school_year)))),
+            Err(e) if api::client::is_forbidden(&e) => last_error = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_error)
+}
+
+/// Load a thread's messages in the TUI, selecting the thread's school on the server
+async fn load_thread_messages(client: &ShkoloClient, cache: &CacheStore, app: &mut App, thread_id: i64) -> Result<Vec<Message>> {
+    let context = thread_context(&app.messages, thread_id);
+    let (messages, served_by) = with_thread_context(client, cache, context, || client.get_thread_messages(thread_id)).await?;
+    note_thread_context(app, thread_id, served_by);
+    Ok(messages)
+}
+
+/// Reply to a thread in the TUI, selecting the thread's school on the server
+async fn send_thread_reply(client: &ShkoloClient, cache: &CacheStore, app: &mut App, thread_id: i64, message: &str) -> Result<()> {
+    let context = thread_context(&app.messages, thread_id);
+    let (_, served_by) = with_thread_context(client, cache, context, || client.reply_to_thread(thread_id, message)).await?;
+    note_thread_context(app, thread_id, served_by);
     Ok(())
+}
+
+/// Remember which school served a thread: the sidebar selection follows it, and a
+/// thread listed without a school (older cache) gets tagged for next time
+fn note_thread_context(app: &mut App, thread_id: i64, context: Option<(i64, i64)>) {
+    let Some((user_id, school_year)) = context else { return };
+    app.set_active_context(user_id, school_year);
+    if let Some(thread) = app.messages.iter_mut().find(|m| m.id == thread_id) {
+        if thread.user_id.is_none() {
+            thread.user_id = Some(user_id);
+            thread.school_year = Some(school_year);
+        }
+    }
 }
 
 /// The parent user id the server marks as selected after login
