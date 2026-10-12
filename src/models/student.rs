@@ -148,6 +148,17 @@ impl Student {
     }
 }
 
+/// Whether a pupil is listed under more than one school context. A pupil belongs to
+/// one school, so this means a school's list was fetched while the server was really
+/// on another school (the selection is per token and can change under us).
+pub fn has_cross_school_duplicates(students: &[Student]) -> bool {
+    let mut seen: HashMap<i64, Option<(i64, i64)>> = HashMap::new();
+    students.iter().any(|s| match seen.insert(s.id, s.context()) {
+        Some(previous) => previous != s.context(),
+        None => false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +208,25 @@ mod tests {
         let contexts = SchoolContext::from_entries(&[broken, entry(2, 2025, "Y", false)]);
         assert_eq!(contexts.len(), 1);
         assert_eq!(contexts[0].user_id, 2);
+    }
+
+    fn pupil(id: i64, user_id: i64) -> Student {
+        Student {
+            id,
+            name: format!("Pupil {}", id),
+            class_name: None,
+            school_name: None,
+            user_id: Some(user_id),
+            school_year: Some(2026),
+        }
+    }
+
+    #[test]
+    fn test_cross_school_duplicates() {
+        assert!(!has_cross_school_duplicates(&[pupil(1, 10), pupil(2, 10), pupil(3, 20)]));
+        // The same pupils under both schools: one list was fetched in the wrong school
+        assert!(has_cross_school_duplicates(&[pupil(1, 20), pupil(2, 20), pupil(1, 10), pupil(2, 10)]));
+        assert!(!has_cross_school_duplicates(&[]));
     }
 
     #[test]

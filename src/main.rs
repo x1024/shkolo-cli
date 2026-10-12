@@ -1441,12 +1441,14 @@ async fn get_students(
     force_refresh: bool,
 ) -> Result<(Vec<Student>, bool, Option<String>)> {
     // Check cache first. A list without school tags can only be trusted for
-    // single-school accounts; otherwise it came from a degraded fetch.
+    // single-school accounts; otherwise it came from a degraded fetch. A pupil
+    // listed under two schools means a list was fetched in the wrong school.
     if !force_refresh {
         if let Some((students, age, expired)) = cache.get_students() {
             let untagged = students.iter().any(|s| s.context().is_none());
             let incomplete = untagged && known_school_count(cache) > 1;
-            if !expired && !incomplete {
+            let corrupt = has_cross_school_duplicates(&students);
+            if !expired && !incomplete && !corrupt {
                 return Ok((students, true, Some(age)));
             }
         }
@@ -1459,9 +1461,26 @@ async fn get_students(
     if contexts.is_empty() {
         students.extend(fetch_pupils(client).await?);
     } else {
-        for ctx in &contexts {
-            ensure_context_persisted(client, cache, ctx.user_id, ctx.school_year).await?;
-            students.extend(fetch_pupils(client).await?.into_iter().map(|s| s.with_context(ctx)));
+        // The selection is per token and can move under us (phone app, a foreground
+        // action), so a list may come from another school than believed. If any pupil
+        // shows up under two schools, refetch every school with explicit switches;
+        // never cache a list that still overlaps.
+        for attempt in 0..2 {
+            students.clear();
+            for ctx in &contexts {
+                if attempt == 0 {
+                    ensure_context_persisted(client, cache, ctx.user_id, ctx.school_year).await?;
+                } else {
+                    switch_context_persisted(client, cache, ctx.user_id, ctx.school_year).await?;
+                }
+                students.extend(fetch_pupils(client).await?.into_iter().map(|s| s.with_context(ctx)));
+            }
+            if !has_cross_school_duplicates(&students) {
+                break;
+            }
+            if attempt == 1 {
+                return Err(anyhow!("The server returned the same pupils for several schools; try refreshing again"));
+            }
         }
     }
 
