@@ -40,6 +40,9 @@ thiserror = "1"
 # Password input
 rpassword = "7"
 
+# Message attachments come as a zip
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 # Fast dev builds
 [profile.dev]
 opt-level = 0

@@ -80,6 +80,10 @@ shkolo json notifications
 # Get messages
 shkolo json messages
 
+# Save a message's attachments (ids from `shkolo json thread <id>`: message id, files[].id),
+# under their real names, to ~/Downloads/Shkolo or --out; the thread's school is selected itself
+shkolo json download <thread_id> <message_id> [--file <file_id>] [--out <dir>]
+
 # Get complete summary
 shkolo json summary
 

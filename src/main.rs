@@ -1,5 +1,6 @@
 mod api;
 mod cache;
+mod downloads;
 mod holidays;
 mod i18n;
 mod models;
@@ -198,6 +199,23 @@ enum JsonCommands {
     Thread {
         /// Thread ID
         thread_id: i64,
+    },
+
+    /// Save a message's attachments (all, or one with --file) under their real names
+    Download {
+        /// Thread ID
+        thread_id: i64,
+
+        /// Message ID (in the thread)
+        message_id: i64,
+
+        /// Only this attachment (its id in the message's files)
+        #[arg(long)]
+        file: Option<i64>,
+
+        /// Folder to save into (default: ~/Downloads/Shkolo)
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
 
     /// Get raw feedbacks data (for debugging)
@@ -542,6 +560,23 @@ async fn run_json_command(
                 }), false, None), format)?,
             }
         }
+        JsonCommands::Download { thread_id, message_id, file, out } => {
+            let dir = out.unwrap_or_else(downloads::default_dir);
+            let context = cache.get_messages()
+                .and_then(|(threads, _, _)| thread_context(&threads, thread_id));
+            let result = download_attachments(&client, cache, context, thread_id, message_id, file, &dir).await;
+            match result {
+                Ok(saved) => output_json(&api::ApiResponse::new(serde_json::json!({
+                    "dir": dir,
+                    "files": saved,
+                }), false, None), format)?,
+                Err(e) => output_json(&api::ApiResponse::new(serde_json::json!({
+                    "error": e.to_string(),
+                    "thread_id": thread_id,
+                    "message_id": message_id,
+                }), false, None), format)?,
+            }
+        }
         JsonCommands::FeedbacksRaw { student } => {
             let (students, _, _) = get_students(&client, cache, force_refresh || no_cache).await?;
             let selected = select_students(&students, student.as_deref());
@@ -823,6 +858,40 @@ async fn run_tui(cache: &CacheStore, lang: Lang) -> Result<()> {
                                             }
                                         }
                                         app.loading = false;
+                                    }
+                                }
+                                Action::DownloadAttachments => {
+                                    if let Some(thread_id) = app.selected_thread_id {
+                                        let with_files: Vec<(i64, Vec<downloads::Attachment>)> = app.thread_messages.iter()
+                                            .filter(|m| !m.files.is_empty())
+                                            .map(|m| (m.id, m.files.iter().map(downloads::Attachment::from).collect()))
+                                            .collect();
+                                        if with_files.is_empty() {
+                                            app.set_status(T::no_attachments(app.lang).to_string());
+                                        } else {
+                                            app.loading = true;
+                                            app.set_status(T::downloading(app.lang).to_string());
+                                            terminal.draw(|f| draw(f, &app))?;
+                                            let dir = downloads::default_dir();
+                                            let context = thread_context(&app.messages, thread_id);
+                                            let mut count = 0;
+                                            let mut failure = None;
+                                            for (message_id, files) in &with_files {
+                                                let saved = async {
+                                                    let (zip, _) = with_thread_context(&client, cache, context, || client.download_message_files(thread_id, *message_id)).await?;
+                                                    downloads::save_zip(&zip, files, None, &dir)
+                                                }.await;
+                                                match saved {
+                                                    Ok(s) => count += s.len(),
+                                                    Err(e) => { failure = Some(e); break; }
+                                                }
+                                            }
+                                            match failure {
+                                                None => app.set_status(T::downloaded(app.lang, count, &dir.display().to_string())),
+                                                Some(e) => app.set_status(format!("{} {}", T::download_failed(app.lang), e)),
+                                            }
+                                            app.loading = false;
+                                        }
                                     }
                                 }
                                 Action::StartCompose => {
@@ -2110,6 +2179,29 @@ fn thread_context(threads: &[MessageThread], thread_id: i64) -> Option<(i64, i64
     threads.iter()
         .find(|m| m.id == thread_id)
         .and_then(|m| Some((m.user_id?, m.school_year?)))
+}
+
+/// Save the attachments of one message (or just `only`) into `dir`, with the thread's school selected.
+async fn download_attachments(
+    client: &ShkoloClient,
+    cache: &CacheStore,
+    context: Option<(i64, i64)>,
+    thread_id: i64,
+    message_id: i64,
+    only: Option<i64>,
+    dir: &std::path::Path,
+) -> Result<Vec<downloads::Saved>> {
+    let (raw, context) = with_thread_context(client, cache, context, || client.get_thread_raw(thread_id)).await?;
+    let message = raw.get("messages")
+        .and_then(|m| m.as_array())
+        .and_then(|ms| ms.iter().find(|m| m.get("id").and_then(|v| v.as_i64()) == Some(message_id)))
+        .ok_or_else(|| anyhow!("message {} isn't in thread {}", message_id, thread_id))?;
+    let files = downloads::attachments(message);
+    if files.is_empty() {
+        return Err(anyhow!("message {} has no attachments", message_id));
+    }
+    let (zip, _) = with_thread_context(client, cache, context, || client.download_message_files(thread_id, message_id)).await?;
+    downloads::save_zip(&zip, &files, only, dir)
 }
 
 /// Run a messenger call for a thread with that thread's school selected on the server.

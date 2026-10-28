@@ -1563,6 +1563,12 @@ fn draw_message_thread(frame: &mut Frame, app: &App, area: Rect) {
                 for wrapped_line in wrap_text(&msg.body, text_width, "    ") {
                     lines.push(Line::from(Span::styled(wrapped_line, body_style)));
                 }
+                for file in &msg.files {
+                    lines.push(Line::from(Span::styled(
+                        format!("    📎 {}", file.name),
+                        Style::default().fg(Color::Magenta).bg(bg),
+                    )));
+                }
 
                 lines.push(Line::from(""));
 
@@ -1572,8 +1578,8 @@ fn draw_message_thread(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let reply_hint = match lang {
-        crate::i18n::Lang::Bg => "[r]-отговор [Esc]-назад",
-        crate::i18n::Lang::En => "[r]-reply [Esc]-back",
+        crate::i18n::Lang::Bg => "[r]-отговор [d]-свали файловете [Esc]-назад",
+        crate::i18n::Lang::En => "[r]-reply [d]-download files [Esc]-back",
     };
 
     let title = format!(" {} {} ", subject, reply_hint);

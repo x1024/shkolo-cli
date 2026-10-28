@@ -20,6 +20,25 @@ pub struct MessageRaw {
     pub created_at: Option<String>,
     // API returns 0/1 integer, not boolean
     pub is_system: Option<i32>,
+    pub files: Option<Vec<MessageFileRaw>>,
+}
+
+/// Attachment of a message (from API)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageFileRaw {
+    pub id: Option<i64>,
+    pub original_name: Option<String>,
+    pub extension: Option<String>,
+    pub mimetype: Option<String>,
+}
+
+/// Attachment of a message; `shkolo json download` / `d` in a thread saves it
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageFile {
+    pub id: i64,
+    pub name: String,
+    pub extension: Option<String>,
+    pub mimetype: Option<String>,
 }
 
 /// A single message within a conversation thread
@@ -31,6 +50,8 @@ pub struct Message {
     pub sender_name: String,
     pub date: String,
     pub is_system: bool,
+    #[serde(default)]
+    pub files: Vec<MessageFile>,
 }
 
 impl Message {
@@ -44,6 +65,12 @@ impl Message {
                 .unwrap_or_default(),
             date: Self::format_date(raw.created_at.as_deref()),
             is_system: raw.is_system.unwrap_or(0) != 0,
+            files: raw.files.iter().flatten().filter_map(|f| Some(MessageFile {
+                id: f.id?,
+                name: f.original_name.clone().unwrap_or_else(|| "file".to_string()),
+                extension: f.extension.clone(),
+                mimetype: f.mimetype.clone(),
+            })).collect(),
         }
     }
 

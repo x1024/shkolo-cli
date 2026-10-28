@@ -285,6 +285,24 @@ impl T {
     pub fn key_close_thread(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Затвори", Lang::En => "Close thread" }
     }
+    pub fn key_download(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Свали прикачените файлове", Lang::En => "Download attachments" }
+    }
+    pub fn downloading(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Свалям прикачените файлове...", Lang::En => "Downloading attachments..." }
+    }
+    pub fn no_attachments(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Няма прикачени файлове.", Lang::En => "No attachments." }
+    }
+    pub fn downloaded(lang: Lang, count: usize, dir: &str) -> String {
+        match lang {
+            Lang::Bg => format!("Свалени файлове: {} в {}", count, dir),
+            Lang::En => format!("Downloaded {} file(s) to {}", count, dir),
+        }
+    }
+    pub fn download_failed(lang: Lang) -> &'static str {
+        match lang { Lang::Bg => "Свалянето не успя:", Lang::En => "Download failed:" }
+    }
     pub fn key_reply(lang: Lang) -> &'static str {
         match lang { Lang::Bg => "Отговор", Lang::En => "Reply to thread" }
     }

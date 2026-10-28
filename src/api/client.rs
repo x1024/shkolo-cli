@@ -217,12 +217,18 @@ impl ShkoloClient {
         self.send_with_retry(request, "POST", endpoint, MAX_ATTEMPTS).await
     }
 
-    /// Send a request, retrying transient (5xx) server errors with backoff.
-    ///
-    /// The Shkolo API intermittently answers 500 "Знаем за проблема и работим по
-    /// отстраняването му! Опитайте по-късно." ("We know about the problem and are
-    /// working on it, try later") in bursts of a few seconds, for requests that
-    /// succeed right afterwards. `max_attempts` of 1 disables retrying.
+    /// GET a file: the body's bytes and its content type, with the same retries and errors as `get`.
+    async fn get_bytes(&self, endpoint: &str) -> Result<(Vec<u8>, Option<String>)> {
+        let url = format!("{}{}", self.base_url(), endpoint);
+        let request = self.client.get(&url).headers(self.headers(true));
+        let response = self.send_raw_with_retry(request, "GET", endpoint, MAX_ATTEMPTS).await?;
+        let content_type = response.headers().get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        Ok((response.bytes().await?.to_vec(), content_type))
+    }
+
+    /// Send a request, retrying transient (5xx) server errors with backoff, and parse its JSON.
     async fn send_with_retry<T: DeserializeOwned>(
         &self,
         request: reqwest::RequestBuilder,
@@ -230,6 +236,23 @@ impl ShkoloClient {
         endpoint: &str,
         max_attempts: u32,
     ) -> Result<T> {
+        let response = self.send_raw_with_retry(request, method, endpoint, max_attempts).await?;
+        Ok(response.json().await?)
+    }
+
+    /// Send a request, retrying transient (5xx) server errors with backoff.
+    ///
+    /// The Shkolo API intermittently answers 500 "Знаем за проблема и работим по
+    /// отстраняването му! Опитайте по-късно." ("We know about the problem and are
+    /// working on it, try later") in bursts of a few seconds, for requests that
+    /// succeed right afterwards. `max_attempts` of 1 disables retrying.
+    async fn send_raw_with_retry(
+        &self,
+        request: reqwest::RequestBuilder,
+        method: &str,
+        endpoint: &str,
+        max_attempts: u32,
+    ) -> Result<reqwest::Response> {
         let mut attempt = 0;
         loop {
             attempt += 1;
@@ -258,8 +281,7 @@ impl ShkoloClient {
                 }.into());
             }
 
-            let data = response.json().await?;
-            return Ok(data);
+            return Ok(response);
         }
     }
 
@@ -526,6 +548,14 @@ impl ShkoloClient {
         };
 
         Ok(messages_raw.iter().map(Message::from_raw).collect())
+    }
+
+    /// All attachments of one message, as the zip the Shkolo app downloads ("files.zip").
+    /// The entries carry transliterated names; the thread's messages list the real ones.
+    /// (The app's single-file URL, /v1/auth/download/{system_name}/, answers 404 for message files.)
+    pub async fn download_message_files(&self, thread_id: i64, message_id: i64) -> Result<Vec<u8>> {
+        let (bytes, _) = self.get_bytes(&format!("/v1/files/download/thread/{}/message/{}", thread_id, message_id)).await?;
+        Ok(bytes)
     }
 
     /// Get raw thread data for debugging

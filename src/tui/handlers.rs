@@ -13,6 +13,7 @@ pub enum Action {
     OpenThread(i64),       // Open thread with given ID
     CloseThread,           // Close current thread
     SendReply(String),     // Send reply message
+    DownloadAttachments,   // Save the open thread's attachments to ~/Downloads/Shkolo
     StartCompose,          // Start composing a new message
     SendCompose { subject: String, body: String, recipients: Vec<i64> }, // Send new message
     // Navigation history
@@ -417,6 +418,8 @@ fn handle_thread_view(app: &mut App, key: KeyEvent) -> Action {
             app.start_reply();
             Action::None
         }
+        // d saves the thread's attachments
+        KeyCode::Char('d') | KeyCode::Char('D') => Action::DownloadAttachments,
         // j/k or Down/Up scroll messages
         KeyCode::Down | KeyCode::Char('j') => {
             let max = app.thread_messages.len().saturating_sub(1);
@@ -461,6 +464,7 @@ pub fn get_keybindings(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.current_tab == Tab::Messages && app.message_view == MessageView::Thread {
         bindings.push(("⌫/Esc/q", T::key_go_back(lang)));
         bindings.push(("r", T::key_reply(lang)));
+        bindings.push(("d", T::key_download(lang)));
         bindings.push(("↓/j ↑/k", T::key_scroll(lang)));
         return bindings;
     }
