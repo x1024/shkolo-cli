@@ -170,8 +170,12 @@ shkolo json absences
 # Отзиви (значки/бележки)
 shkolo json feedbacks
 
-# Известия
+# Известия; всяко има `url` - връзката на приложението към това, за което е
 shkolo json notifications
+
+# Едно събитие (контролна, родителска среща): име, вид, описание, начало и край.
+# Номерът е първото число във връзката `events/<id>/invitations/<id>` на известието
+shkolo json event <event_id> [--user-id <родителски профил на училището>]
 
 # Съобщения
 shkolo json messages

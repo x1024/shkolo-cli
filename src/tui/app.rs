@@ -1621,9 +1621,9 @@ mod tests {
 
         // Add some items so scrolling works
         app.notifications = vec![
-            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None, school_name: None, user_id: None, school_year: None },
-            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None, school_name: None, user_id: None, school_year: None },
-            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None, school_name: None, user_id: None, school_year: None },
+            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None, school_name: None, user_id: None, school_year: None, url: None },
+            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None, school_name: None, user_id: None, school_year: None, url: None },
+            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: None, pupil_names: None, school_name: None, user_id: None, school_year: None, url: None },
         ];
 
         assert_eq!(app.list_offset, 0);
@@ -1776,10 +1776,10 @@ mod tests {
 
         // Setup notifications
         app.notifications = vec![
-            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
-            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
-            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
-            Notification { id: Some("4".into()), title: "N4".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
+            Notification { id: Some("1".into()), title: "N1".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None, url: None },
+            Notification { id: Some("2".into()), title: "N2".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None, school_name: None, user_id: None, school_year: None, url: None },
+            Notification { id: Some("3".into()), title: "N3".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None, url: None },
+            Notification { id: Some("4".into()), title: "N4".into(), body: Some("Body".into()), date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None, url: None },
         ];
 
         let header_offset = 3;
@@ -1855,8 +1855,8 @@ mod tests {
         app.focus = Focus::Content;
 
         app.notifications = vec![
-            Notification { id: Some("1".into()), title: "N1".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
-            Notification { id: Some("2".into()), title: "N2".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None, school_name: None, user_id: None, school_year: None },
+            Notification { id: Some("1".into()), title: "N1".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_grade".into()), pupil_names: None, school_name: None, user_id: None, school_year: None, url: None },
+            Notification { id: Some("2".into()), title: "N2".into(), body: None, date: "".into(), is_read: false, notification_type: Some("new_homework".into()), pupil_names: None, school_name: None, user_id: None, school_year: None, url: None },
         ];
 
         // Activate notification at index 1

@@ -4,6 +4,8 @@ use std::collections::HashMap;
 /// A single grade entry with metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradeEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub value: String,
     pub date: Option<String>,
     pub description: Option<String>,
@@ -21,9 +23,13 @@ pub struct Grade {
 }
 
 /// Raw grade from the /grades endpoint (flat list)
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct GradeRaw {
+    #[serde(default, deserialize_with = "id_string")]
+    pub id: Option<String>,
     pub grade: Option<String>,
+    /// Primary-school grades are shown as a word and have only this, with `grade` empty
+    pub numerical_value: Option<f64>,
     pub grade_date: Option<String>,
     pub description: Option<String>,
     pub course_name: Option<String>,
@@ -35,6 +41,15 @@ pub struct GradeRaw {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GradesListResponse {
     pub grades: Option<Vec<GradeRaw>>,
+}
+
+/// An id the API sends as a string or as a number
+fn id_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    })
 }
 
 // --- Legacy types for /grades/summary endpoint (kept for reference) ---
@@ -93,12 +108,14 @@ impl Grade {
             let mut annual = None;
 
             for g in entries {
-                let value = match &g.grade {
-                    Some(v) => v.clone(),
-                    None => continue,
+                let value = match (&g.grade, g.numerical_value) {
+                    (Some(v), _) => v.clone(),
+                    (None, Some(n)) => n.to_string(),
+                    (None, None) => continue,
                 };
 
                 let entry = GradeEntry {
+                    id: g.id.clone(),
                     value,
                     date: g.grade_date.clone(),
                     description: g.description.clone(),
@@ -221,6 +238,7 @@ fn extract_grades(term: &Option<TermGrades>) -> Vec<GradeEntry> {
             for (_, detail) in entries {
                 if let Some(g) = extract_grade_value(detail) {
                     grades.push(GradeEntry {
+                        id: None,
                         value: g,
                         date: None,
                         description: None,
@@ -233,6 +251,7 @@ fn extract_grades(term: &Option<TermGrades>) -> Vec<GradeEntry> {
             for detail in list {
                 if let Some(g) = extract_grade_value(detail) {
                     grades.push(GradeEntry {
+                        id: None,
                         value: g,
                         date: None,
                         description: None,
@@ -252,6 +271,7 @@ fn extract_final_grade(term: &Option<TermGrades>) -> Option<GradeEntry> {
             for detail in map.values() {
                 if let Some(g) = extract_grade_value(detail) {
                     return Some(GradeEntry {
+                        id: None,
                         value: g,
                         date: None,
                         description: None,
@@ -264,6 +284,7 @@ fn extract_final_grade(term: &Option<TermGrades>) -> Option<GradeEntry> {
             for detail in list {
                 if let Some(g) = extract_grade_value(detail) {
                     return Some(GradeEntry {
+                        id: None,
                         value: g,
                         date: None,
                         description: None,
@@ -313,6 +334,7 @@ mod tests {
                 grade_type_name: Some("Домашна работа".into()),
                 type_id: Some(3),
                 term_id: Some(1),
+                ..Default::default()
             },
             GradeRaw {
                 grade: Some("5".into()),
@@ -322,6 +344,7 @@ mod tests {
                 grade_type_name: Some("Тест".into()),
                 type_id: Some(7),
                 term_id: Some(2),
+                ..Default::default()
             },
             GradeRaw {
                 grade: Some("6".into()),
@@ -331,6 +354,7 @@ mod tests {
                 grade_type_name: Some("Срочна".into()),
                 type_id: Some(5), // term final
                 term_id: Some(1),
+                ..Default::default()
             },
         ];
 
@@ -358,6 +382,7 @@ mod tests {
                 grade_type_name: None,
                 type_id: Some(4),
                 term_id: Some(1),
+                ..Default::default()
             },
             GradeRaw {
                 grade: Some("6".into()),
@@ -367,6 +392,7 @@ mod tests {
                 grade_type_name: None,
                 type_id: Some(4),
                 term_id: Some(1),
+                ..Default::default()
             },
             GradeRaw {
                 grade: Some("5".into()),
@@ -376,6 +402,7 @@ mod tests {
                 grade_type_name: None,
                 type_id: Some(4),
                 term_id: Some(1),
+                ..Default::default()
             },
         ];
 

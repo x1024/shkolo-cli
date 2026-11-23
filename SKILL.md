@@ -74,8 +74,12 @@ shkolo json absences [student_name_or_index]
 # Get feedbacks (teacher remarks)
 shkolo json feedbacks [student_name_or_index]
 
-# Get notifications
+# Get notifications; each has `url`, the app's deep link to what it is about
 shkolo json notifications
+
+# Get one event (a test, a parents' meeting): name, type, description, start and end.
+# The id is the first number in a notification's `events/<id>/invitations/<id>` link
+shkolo json event <event_id> [--user-id <parent user id of its school>]
 
 # Get messages
 shkolo json messages

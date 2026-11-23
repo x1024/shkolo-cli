@@ -9,6 +9,9 @@ pub struct Notification {
     pub is_read: bool,
     pub notification_type: Option<String>,
     pub pupil_names: Option<String>,
+    /// The app's deep link, e.g. `app/main/home/communication/thread/<id>/<subject>`
+    #[serde(default)]
+    pub url: Option<String>,
     /// School context the item came from (set when aggregating over several schools)
     #[serde(default)]
     pub school_name: Option<String>,
@@ -43,6 +46,7 @@ pub struct NotificationRaw {
     pub pupil_names: Option<String>,
     pub pupil_name: Option<String>,
     pub pupils: Option<Vec<String>>,
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +89,7 @@ impl Notification {
                     t.replace('.', "_")
                 }),
             pupil_names,
+            url: raw.url.clone().filter(|u| !u.is_empty()),
         }
     }
 }

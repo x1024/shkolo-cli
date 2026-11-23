@@ -201,6 +201,16 @@ enum JsonCommands {
         thread_id: i64,
     },
 
+    /// Get one event (a test, a parents' meeting, ...): name, type, description, start and end
+    Event {
+        /// Event ID (the first number in a notification's `events/<id>/invitations/<id>` link)
+        event_id: i64,
+
+        /// Parent user id of the event's school (as in the notification); tried first
+        #[arg(long)]
+        user_id: Option<i64>,
+    },
+
     /// Save a message's attachments (all, or one with --file) under their real names
     Download {
         /// Thread ID
@@ -557,6 +567,19 @@ async fn run_json_command(
                 Err(e) => output_json(&api::ApiResponse::new(serde_json::json!({
                     "error": e.to_string(),
                     "thread_id": thread_id,
+                }), false, None), format)?,
+            }
+        }
+        JsonCommands::Event { event_id, user_id } => {
+            let context = user_id.zip(client.school_year());
+            match with_thread_context(&client, cache, context, || client.get_event_raw(event_id)).await {
+                Ok((data, _)) => {
+                    let event = data.get("event").cloned().unwrap_or(data);
+                    output_json(&api::ApiResponse::new(event, false, None), format)?
+                }
+                Err(e) => output_json(&api::ApiResponse::new(serde_json::json!({
+                    "error": e.to_string(),
+                    "event_id": event_id,
                 }), false, None), format)?,
             }
         }

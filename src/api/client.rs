@@ -558,6 +558,10 @@ impl ShkoloClient {
         Ok(bytes)
     }
 
+    pub async fn get_event_raw(&self, event_id: i64) -> Result<serde_json::Value> {
+        self.get(&format!("/v1/events/{}", event_id)).await
+    }
+
     /// Get raw thread data for debugging
     pub async fn get_thread_raw(&self, thread_id: i64) -> Result<serde_json::Value> {
         self.get(&format!("/v1/messenger/threads/{}/messages", thread_id)).await

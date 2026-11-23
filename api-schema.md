@@ -267,6 +267,28 @@ POST /v1/auth/switchUserAndYear
 | POST | `/v1/notifications/markAsRead` | Mark notification as read |
 | POST | `/v1/notifications/markAllAsRead` | Mark all as read |
 
+A notification: `id`, `text`, `notification_trigger_slug`, `url`, `created_at`, `seen_at`, `user_id`
+(the parent user of its school), `start_year`. One call returns the notifications of the school the
+server is on. Seen live (2026-11): triggers `new.message`, `new.homework`, `new.grade`, `delete.grade`,
+`new.absence`, `update.absence`, `new.feedback`, `new.event`, `update.event`, `upcoming.control`.
+
+`url` is a deep link into the app. All the app has (main.jsbundle, 1.45.7), after `app/main/home/`:
+
+| Link | Opens |
+|------|-------|
+| `communication/thread/:threadId/:subject` | a message thread |
+| `classbook/schedule/homeworks/:homeworkId/pupil/:pupilId/classYear/:classYearId` | a homework (`shih_id` in the homework list) |
+| `classbook/pupils/:pupilId/courses/:courseMixId/grades/:gradeId` | a grade |
+| `classbook/pupils/:pupilId/absences/:absenceId/type/{1,2,3}` | an absence |
+| `classbook/pupils/:pupilId/feedback/:feedbackId/type/{1,2}` | a feedback |
+| `events/:eventId/invitations/:inviteId` | an event (`GET /v1/events/:eventId`) |
+| `classbook/schedule/shi/:shiId` | a lesson |
+| `more/tasks/task/:taskId/taskInstance/:taskInstanceId/:canChangeStatus` | a task |
+| `more/tests/details/:testId`, `more/tests/childResults/:pupilUserId`, `more/tests/myResults` | online tests |
+| `more/notes/:noteId` | a note |
+| `more/activity/:activityId/user_id/:participantUserId/participant_id/:activityParticipantId/badge_type_id/{1,2}/badge_id/:badgeId` | an activity badge |
+| `more/lecturerHours/teacherAbsenceDetails/:teacherAbsenceId` | a teacher's absence (teachers) |
+
 ---
 
 ### Tasks (`/v1/tasks`)

@@ -30,6 +30,7 @@ pub struct HomeworkCoursesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HomeworkItem {
+    #[serde(alias = "shih_id")]
     pub id: Option<i64>,
     pub homework_text: Option<String>,
     pub homework_due_date: Option<String>,
